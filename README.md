@@ -16,6 +16,16 @@ VIKI Code is governed coding infrastructure for teams that want an AI system to 
 
 It is built for serious engineering workflows: bug-fixes, refactors, migrations, repo intelligence, local API control, IDE handoff, and chat-driven approvals across the same governed execution core.
 
+<p align="center">
+  <a href="https://rebootix-research.com/viki-code"><strong>Product Page</strong></a>
+  ·
+  <a href="https://github.com/rebootix-research/viki-code"><strong>GitHub</strong></a>
+  ·
+  <a href="./PROOF_REPORT.md"><strong>Proof Report</strong></a>
+  ·
+  <a href="./RELEASE_NOTES.md"><strong>Release Notes</strong></a>
+</p>
+
 ## Why VIKI Code
 
 - Real repo execution instead of chat-only suggestions.
@@ -63,6 +73,14 @@ The same execution stack powers:
 - engineering teams working in larger repos or monorepos
 - teams that need approvals, rollback, and proof artifacts alongside automation
 - builders who want a serious local coding agent surface, not only a hosted chat UX
+
+## Product Page
+
+VIKI Code now also lives on the Rebootix site:
+
+- [https://rebootix-research.com/viki-code](https://rebootix-research.com/viki-code)
+
+The site is positioned as the public product surface for VIKI Code, while this repository remains the full engineering source, proof base, and release home.
 
 ## Install
 

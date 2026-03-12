@@ -69,3 +69,4 @@ This repository was then tightened for public presentation without changing the 
 - removed stale release leftovers and older proof clutter from the public repo surface
 - cleaned package metadata so the license and new public assets ship correctly
 - revalidated the repo with `pytest`, the documented install bootstrap, and a fresh package build
+- added a linked public product-page CTA so the GitHub repo and Rebootix website now point at the same VIKI Code launch surface
