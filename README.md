@@ -112,6 +112,13 @@ If you prefer a built artifact flow, install from the release wheel:
 pip install dist/viki_code-4.1.4-py3-none-any.whl
 ```
 
+If you prefer a container package, pull the published GitHub Container Registry image:
+
+```bash
+docker pull ghcr.io/rebootix-research/viki-code:latest
+docker run --rm ghcr.io/rebootix-research/viki-code:latest --help
+```
+
 ## Quick Start
 
 Installed launcher locations:
