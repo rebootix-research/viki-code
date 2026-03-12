@@ -5,7 +5,12 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-4.1.4-0f172a?style=for-the-badge" />
+  <a href="https://github.com/rebootix-research/viki-code/releases/latest">
+    <img alt="Release" src="https://img.shields.io/github/v/release/rebootix-research/viki-code?display_name=tag&style=for-the-badge&color=0f172a" />
+  </a>
+  <a href="https://github.com/rebootix-research/viki-code/stargazers">
+    <img alt="GitHub stars" src="https://img.shields.io/github/stars/rebootix-research/viki-code?style=for-the-badge&color=f59e0b" />
+  </a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-2563eb?style=for-the-badge" />
   <img alt="License" src="https://img.shields.io/badge/license-MIT-059669?style=for-the-badge" />
   <img alt="Live suite" src="https://img.shields.io/badge/live%20suite-9%2F9-success?style=for-the-badge" />
@@ -26,6 +31,10 @@ It is built for serious engineering workflows: bug-fixes, refactors, migrations,
   <a href="./RELEASE_NOTES.md"><strong>Release Notes</strong></a>
 </p>
 
+<p align="center">
+  If VIKI Code is relevant to your stack, star the repo to follow releases, proof updates, and benchmark progress.
+</p>
+
 ## Why VIKI Code
 
 - Real repo execution instead of chat-only suggestions.
@@ -33,6 +42,13 @@ It is built for serious engineering workflows: bug-fixes, refactors, migrations,
 - Multi-agent execution designed for planning, implementation, validation, and review.
 - Repo intelligence tuned for large codebases, monorepos, and targeted test selection.
 - CLI, API, VS Code, Telegram, and WhatsApp surfaces over one execution model.
+
+## What You Can Do In Five Minutes
+
+- Install locally and boot the governed runtime on a real repository.
+- Ask VIKI to inspect a repo, localize likely impact, and suggest the right tests.
+- Run a real bug-fix or refactor task and review the resulting diff before accepting it.
+- Use the same session model across CLI, API, IDE, and approval workflows.
 
 ## Proof At A Glance
 
@@ -85,6 +101,8 @@ The Rebootix website source now includes a dedicated `/viki-code` product route,
 Clone the repository and bootstrap a local install inside the checkout:
 
 ```bash
+git clone https://github.com/rebootix-research/viki-code.git
+cd viki-code
 python scripts/install.py --path .
 ```
 
