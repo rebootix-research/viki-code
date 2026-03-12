@@ -9,10 +9,13 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
 
+from .._log import structlog
 from ..config import settings
 from ..infrastructure.security import DockerSandbox, SecretBroker, SecurityScanner
 from ..tools.ast_edits import ASTEditEngine
 from ..tools.patches import PatchApplyError, PatchEngine
+
+logger = structlog.get_logger()
 
 
 class WorkspaceExecutor:
@@ -146,18 +149,34 @@ class WorkspaceExecutor:
         sandbox_network = settings.sandbox_network_enabled if network_enabled is None else network_enabled
 
         if settings.sandbox_enabled and self.sandbox.available:
-            result = self.sandbox.run_command(str(cwd), prepared_command, timeout=timeout, network_enabled=sandbox_network, environment=self.secrets.export(secret_names or []), labels=labels)
-            return {
-                "returncode": result.get("returncode", 1),
-                "output": self.security.redact_text(str(result.get("output", ""))),
-                "error": self.security.redact_text(str(result.get("error", ""))),
-                "command": command,
-                "effective_command": prepared_command,
-                "cwd": str(cwd),
-                "runtime": result.get("runtime", "docker"),
-                "sandboxed": True,
-                "sandbox_profile": result.get("profile", {}),
-            }
+            try:
+                result = self.sandbox.run_command(
+                    str(cwd),
+                    prepared_command,
+                    timeout=timeout,
+                    network_enabled=sandbox_network,
+                    environment=self.secrets.export(secret_names or []),
+                    labels=labels,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "sandbox command failed, falling back to local execution",
+                    command=prepared_command,
+                    cwd=str(cwd),
+                    error=str(exc),
+                )
+            else:
+                return {
+                    "returncode": result.get("returncode", 1),
+                    "output": self.security.redact_text(str(result.get("output", ""))),
+                    "error": self.security.redact_text(str(result.get("error", ""))),
+                    "command": command,
+                    "effective_command": prepared_command,
+                    "cwd": str(cwd),
+                    "runtime": result.get("runtime", "docker"),
+                    "sandboxed": True,
+                    "sandbox_profile": result.get("profile", {}),
+                }
 
         if os.name == "nt":
             tokens: str | list[str] = prepared_command

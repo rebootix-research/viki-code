@@ -147,6 +147,31 @@ def test_prepare_command_falls_back_to_python3_when_python_missing(tmp_path: Pat
     assert prepared.startswith("python3 -m pytest")
 
 
+def test_run_command_falls_back_to_local_when_sandbox_execution_breaks(tmp_path: Path, monkeypatch):
+    class BrokenSandbox:
+        available = True
+
+        def run_command(self, *args, **kwargs):
+            raise RuntimeError("sandbox image missing")
+
+    executor = WorkspaceExecutor(tmp_path, sandbox=BrokenSandbox())
+
+    class Completed:
+        returncode = 0
+        stdout = "local ok\n"
+        stderr = ""
+
+    monkeypatch.setattr("viki.core.actions.settings.sandbox_enabled", True)
+    monkeypatch.setattr("viki.core.actions.subprocess.run", lambda *args, **kwargs: Completed())
+
+    result = executor.run_command("python -m pytest -q", root=tmp_path)
+
+    assert result["returncode"] == 0
+    assert result["runtime"] == "local"
+    assert result["sandboxed"] is False
+    assert "--rootdir ." in result["effective_command"]
+
+
 def test_skill_factory_manifest_and_registry(tmp_path: Path):
     factory = AutoSkillFactory(str(tmp_path), provider=None)
 
