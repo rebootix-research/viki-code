@@ -1,1 +1,1 @@
-"""VIKI UI - Dashboard and Interactive Interface"""
+"""VIKI UI - Dashboard and terminal presentation helpers."""

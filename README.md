@@ -156,6 +156,26 @@ viki up . --dry-run
 viki run "Fix the broken calculation and run the relevant tests" --path .
 ```
 
+## Terminal Experience
+
+VIKI ships with a premium terminal presentation layer for interactive use. In a capable terminal it renders a branded banner, session header, repo and branch context, provider and model strip, agent activity tables, approval panels, and readable diff previews.
+
+- Default interactive theme: `premium`
+- Alternate high-contrast theme: `contrast`
+- Plain fallback: automatic in CI, non-interactive shells, and minimal terminals
+- Explicit plain mode: `viki --plain ...`
+
+Examples:
+
+```bash
+viki --theme premium doctor .
+viki --theme premium run "Fix the broken calculation and make tests pass" --path .
+viki --plain run "Inspect this repo and summarize the next safe step" --path .
+viki --theme premium diff <session_id> --path . --rendered
+```
+
+The themed layer is designed for PowerShell, macOS Terminal, Linux shells, and modern Windows terminals without requiring shell-specific setup.
+
 ## CLI
 
 Repo intelligence and session tooling:

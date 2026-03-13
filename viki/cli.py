@@ -4,13 +4,17 @@ import asyncio
 import json
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import Optional
 
+warnings.filterwarnings(
+    "ignore",
+    message=r".*urllib3 .* doesn't match a supported version.*",
+)
+
 import typer
 import uvicorn
-from rich import print as rprint
-from rich.console import Console
 from rich.table import Table
 
 from . import __version__
@@ -31,6 +35,7 @@ from .providers.litellm_provider import LiteLLMProvider
 from .skills.factory import AutoSkillFactory
 from .skills.package import SkillPackageManager
 from .skills.registry import SkillRegistry
+from .ui.cli_theme import PALETTES, create_terminal_ui
 
 app = typer.Typer(help="VIKI Code - production-oriented swarm coding system")
 skills_app = typer.Typer(help="Manage VIKI skills")
@@ -43,11 +48,85 @@ app.add_typer(approvals_app, name="approvals")
 app.add_typer(ide_app, name="ide")
 app.add_typer(evals_app, name="evals")
 app.add_typer(integrations_app, name="integrations")
-console = Console()
+ui = create_terminal_ui()
+console = ui.console
+
+
+def _configure_terminal_ui(plain_requested: bool, theme_name: str) -> None:
+    global ui, console
+    normalized = theme_name.lower().strip()
+    if normalized not in PALETTES:
+        raise typer.BadParameter(f"Unknown theme '{theme_name}'. Choose from: {', '.join(sorted(PALETTES))}")
+    ui = create_terminal_ui(plain_requested=plain_requested, theme_name=normalized)
+    console = ui.console
+
+
+@app.callback()
+def _main_callback(
+    plain: bool = typer.Option(False, "--plain", help="Render plain terminal output without color or panels."),
+    theme: str = typer.Option("premium", "--theme", help="CLI theme to use. Supported: premium, contrast."),
+):
+    _configure_terminal_ui(plain, theme)
 
 
 def _workspace_root(path: Path) -> Path:
     return path.resolve()
+
+
+def _git_branch(root: Path) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except Exception:
+        return "detached"
+    branch = (completed.stdout or "").strip()
+    return branch or "detached"
+
+
+def _provider_summary(provider: Optional[LiteLLMProvider] = None) -> str:
+    current = provider or LiteLLMProvider()
+    if not current._available:
+        return "unavailable"
+    backends = current.available_backends()
+    return ", ".join(backends[:3]) if backends else "unconfigured"
+
+
+def _model_summary() -> str:
+    models = [
+        ("reason", settings.reasoning_model),
+        ("code", settings.coding_model),
+        ("fast", settings.quick_model),
+    ]
+    return " | ".join(f"{label}:{value}" for label, value in models)
+
+
+def _render_cli_header(
+    title: str,
+    *,
+    root: Path,
+    provider: Optional[LiteLLMProvider] = None,
+    session_id: Optional[str] = None,
+    autonomy_mode: Optional[str] = None,
+    validation_state: str = "pending",
+) -> None:
+    ui.banner(__version__)
+    ui.header(
+        title,
+        repo_root=root,
+        branch=_git_branch(root),
+        provider=_provider_summary(provider),
+        models=_model_summary(),
+        session_id=session_id,
+        autonomy_mode=autonomy_mode,
+        approval_mode=settings.approval_mode,
+        validation_state=validation_state,
+    )
 
 
 def _db_for_root(root: Path) -> DatabaseManager:
@@ -118,13 +197,14 @@ WHATSAPP_WEBHOOK_URL=
 @app.command()
 def init(path: Path = typer.Argument(Path('.'), help="Workspace root"), force: bool = typer.Option(False, "--force", "-f")):
     root = _workspace_root(path)
+    _render_cli_header("Workspace Setup", root=root, autonomy_mode="bootstrap", validation_state="ready")
     workspace = root / settings.workspace_dir
     if workspace.exists() and not force:
-        rprint("[yellow]Workspace already initialized. Use --force to regenerate the template.[/yellow]")
+        ui.warning("Workspace already initialized. Use --force to regenerate the template.")
         raise typer.Exit(1)
     workspace = _ensure_initialized(root, force_env=force)
-    rprint(f"[green]Initialized VIKI workspace at {workspace}[/green]")
-    rprint("[blue]Edit .env, then run: viki doctor[/blue]")
+    ui.success(f"Initialized VIKI workspace at {workspace}")
+    ui.info("Edit .env, then run: viki doctor")
 
 
 @app.command()
@@ -136,13 +216,14 @@ def up(
     dry_run: bool = typer.Option(False, "--dry-run", help="Prepare workspace without starting the API server"),
 ):
     root = _workspace_root(path)
+    _render_cli_header("Workspace Runtime", root=root, autonomy_mode="up", validation_state="ready")
     workspace = _ensure_initialized(root, force_env=force_env)
     PlatformSupport.write_local_launchers(root, Path(sys.executable).resolve())
-    rprint(f"[green]VIKI workspace ready at {workspace}[/green]")
+    ui.success(f"VIKI workspace ready at {workspace}")
     if dry_run:
-        rprint(f"[blue]Dry run complete. Start with: viki up {root}[/blue]")
+        ui.info(f"Dry run complete. Start with: viki up {root}")
         return
-    rprint(f"[blue]Starting VIKI API on http://{host}:{port}[/blue]")
+    ui.info(f"Starting VIKI API on http://{host}:{port}")
     app_instance = create_app(root)
     uvicorn.run(app_instance, host=host, port=port)
 
@@ -152,6 +233,7 @@ def doctor(path: Path = typer.Argument(Path('.'), help="Workspace root")):
     root = _workspace_root(path)
     setup_logging(settings.log_level, settings.structured_logging)
     provider = LiteLLMProvider()
+    _render_cli_header("Doctor", root=root, provider=provider, autonomy_mode="diagnostic", validation_state="checks")
     profile = PlatformSupport.current()
     table = Table(title="VIKI Doctor")
     table.add_column("Check")
@@ -189,12 +271,13 @@ def doctor(path: Path = typer.Argument(Path('.'), help="Workspace root")):
     table.add_row("Approvals", settings.approval_mode)
     table.add_row("API", f"{settings.api_host}:{settings.api_port}")
     table.add_row("Launcher", profile.launcher_hint)
-    console.print(table)
+    ui.render_table(table)
 
 
 @app.command("platforms")
 def platform_info():
     profile = PlatformSupport.current()
+    ui.banner(__version__)
     table = Table(title="VIKI Platform Support")
     table.add_column("Field")
     table.add_column("Value")
@@ -205,7 +288,7 @@ def platform_info():
     table.add_row("Venv Python", profile.venv_python)
     table.add_row("Launcher", profile.launcher_name)
     table.add_row("Shortcut", profile.launcher_hint)
-    console.print(table)
+    ui.render_table(table)
 
 
 @app.command()
@@ -223,55 +306,71 @@ def run(
 ):
     root = _workspace_root(path)
     if not (root / settings.workspace_dir).exists():
-        rprint("[red]Workspace not initialized. Run 'viki init' first.[/red]")
+        ui.error("Workspace not initialized. Run 'viki init' first.")
         raise typer.Exit(1)
 
     if detach and not background_child:
         cmd = [sys.executable, "-m", "viki.cli", "run", prompt, "--mode", mode, "--path", str(root), "--background-child"]
         proc = subprocess.Popen(cmd, cwd=str(root))
-        rprint(f"[green]Detached VIKI run started with PID {proc.pid}[/green]")
+        _render_cli_header("Detached Run", root=root, autonomy_mode=mode, validation_state="queued")
+        ui.success(f"Detached VIKI run started with PID {proc.pid}")
         return
 
     setup_logging(settings.log_level, settings.structured_logging)
     if settings.metrics_enabled:
         start_metrics_server(settings.metrics_port)
     provider = LiteLLMProvider()
+    _render_cli_header("Live Session", root=root, provider=provider, autonomy_mode=mode, validation_state="pending")
     if not provider.validate_config():
-        rprint("[red]No provider configuration detected. Add at least one API backend in .env.[/red]")
+        ui.error("No provider configuration detected. Add at least one API backend in .env.")
         raise typer.Exit(1)
 
     async def main():
         hive = HiveMind(provider, str(root))
         await hive.initialize()
         try:
+            _render_cli_header(
+                "Execution",
+                root=root,
+                provider=provider,
+                session_id=hive.session_id,
+                autonomy_mode=mode,
+                validation_state="running",
+            )
             result = await hive.process_request(prompt, mode=mode)
         finally:
             await hive.shutdown()
-        console.print(f"[bold green]Session {result['session_id']}[/bold green]")
-        console.print(f"Status: {result['status']}")
+        _render_cli_header(
+            "Completed Session",
+            root=root,
+            provider=provider,
+            session_id=result["session_id"],
+            autonomy_mode=mode,
+            validation_state="green" if result["status"] == "completed" else result["status"],
+        )
+        ui.render_run_summary(result)
         if result["changed_files"]:
-            console.print("Changed files:")
+            ui.section("Changed Files")
             for path_item in result["changed_files"]:
-                console.print(f"  - {path_item}")
+                console.print(f"- {path_item}")
         if result["created_skills"]:
-            console.print("Created skills:")
+            ui.section("Created Skills")
             for item in result["created_skills"]:
-                console.print(f"  - {item['name']}: {item['path']}")
-        if result["pending_approvals"]:
-            console.print("Pending approvals:")
-            for item in result["pending_approvals"]:
-                console.print(f"  - #{item['id']} {item['subject']} (risk {item['risk_score']})")
+                console.print(f"- {item['name']}: {item['path']}")
+        ui.render_task_activity(result.get("task_results", []))
+        ui.render_diff_preview(result.get("diff_preview", []), limit=3)
+        ui.render_approvals(result.get("pending_approvals", []))
         failing = [entry for entry in result["commands"] if entry.get("returncode") not in (0, None)]
         if failing:
-            console.print("[yellow]Commands with non-zero exit codes:[/yellow]")
-            for entry in failing:
-                console.print(f"  - {entry.get('command')}: {entry.get('returncode')}")
+            ui.render_command_failures(failing)
+        else:
+            ui.success("Validation completed without non-zero command results.")
         return result
 
     try:
         asyncio.run(main())
     except Exception as exc:
-        rprint(f"[red]VIKI run failed: {exc}[/red]")
+        ui.error(f"VIKI run failed: {exc}")
         raise typer.Exit(1)
 
 
@@ -316,6 +415,7 @@ def impact(
 def diff(
     session_id: str = typer.Argument(..., help="Session id to inspect"),
     path: Path = typer.Option(Path('.'), "--path", help="Workspace root"),
+    rendered: bool = typer.Option(False, "--rendered", help="Show a themed diff preview instead of raw JSON."),
 ):
     root = _workspace_root(path)
     db = _db_for_root(root)
@@ -324,12 +424,21 @@ def diff(
         await db.initialize()
         session = await db.get_session(session_id)
         if not session:
-            console.print(f"[red]Session not found: {session_id}[/red]")
+            ui.error(f"Session not found: {session_id}")
             raise typer.Exit(1)
         payload = session.get("result_json")
         if isinstance(payload, str):
             payload = json.loads(payload) if payload else {}
         payload = payload or {}
+        if rendered:
+            _render_cli_header("Diff Review", root=root, session_id=session_id, autonomy_mode="review", validation_state="recorded")
+            ui.render_diff_preview(payload.get("diff_preview", []), limit=12)
+            patch_bundles = payload.get("patch_bundles", [])
+            if patch_bundles:
+                ui.section("Patch Bundles")
+                for bundle in patch_bundles:
+                    console.print(f"- {bundle}")
+            return
         console.print_json(json.dumps({"diff_preview": payload.get("diff_preview", []), "patch_bundles": payload.get("patch_bundles", [])}))
 
     asyncio.run(main())
@@ -346,6 +455,7 @@ def status(path: Path = typer.Argument(Path('.'), help="Workspace root"), sessio
             session = await db.get_session(session_id)
             console.print_json(json.dumps(session or {}))
             return
+        _render_cli_header("Session Status", root=root, autonomy_mode="status", validation_state="history")
         sessions = await db.get_recent_sessions(10)
         table = Table(title="Recent VIKI sessions")
         table.add_column("Session")
@@ -353,7 +463,7 @@ def status(path: Path = typer.Argument(Path('.'), help="Workspace root"), sessio
         table.add_column("Request")
         for item in sessions:
             table.add_row(item["id"], item.get("status", "?"), (item.get("user_request") or "")[:60])
-        console.print(table)
+        ui.render_table(table)
 
     asyncio.run(main())
 
@@ -542,6 +652,7 @@ def approvals_list(path: Path = typer.Argument(Path('.'), help="Workspace root")
 
     async def main():
         await db.initialize()
+        _render_cli_header("Approvals", root=root, autonomy_mode="approval-review", validation_state=status)
         rows = await db.list_approvals(status=status, limit=100)
         table = Table(title=f"Approvals ({status})")
         table.add_column("ID")
@@ -550,7 +661,7 @@ def approvals_list(path: Path = typer.Argument(Path('.'), help="Workspace root")
         table.add_column("Subject")
         for row in rows:
             table.add_row(str(row["id"]), row.get("request_type", ""), str(row.get("risk_score", 0)), row.get("subject", ""))
-        console.print(table)
+        ui.render_table(table)
 
     asyncio.run(main())
 
@@ -563,7 +674,8 @@ def approvals_approve(approval_id: int = typer.Argument(...), path: Path = typer
     async def main():
         await db.initialize()
         await db.resolve_approval(approval_id, status="approved", reviewer=f"cli-user:{scope}")
-        console.print(f"[green]Approved #{approval_id} ({scope})[/green]")
+        _render_cli_header("Approval Granted", root=root, autonomy_mode="approval-review", validation_state="approved")
+        ui.success(f"Approved #{approval_id} ({scope})")
 
     asyncio.run(main())
 
@@ -576,7 +688,8 @@ def approvals_reject(approval_id: int = typer.Argument(...), path: Path = typer.
     async def main():
         await db.initialize()
         await db.resolve_approval(approval_id, status="rejected", reviewer="cli-user")
-        console.print(f"[yellow]Rejected #{approval_id}[/yellow]")
+        _render_cli_header("Approval Rejected", root=root, autonomy_mode="approval-review", validation_state="rejected")
+        ui.warning(f"Rejected #{approval_id}")
 
     asyncio.run(main())
 
@@ -655,13 +768,14 @@ def evals_publish(
 def integrations_status():
     telegram = TelegramBotClient()
     whatsapp = TwilioWhatsAppClient()
+    _render_cli_header("Integrations", root=Path("."), autonomy_mode="integration-status", validation_state="ready")
     table = Table(title="VIKI Integrations")
     table.add_column("Channel")
     table.add_column("Enabled")
     table.add_column("Policy")
     table.add_row("Telegram", "yes" if telegram.enabled else "no", "secret" if telegram.secret else "open")
     table.add_row("WhatsApp", "yes" if whatsapp.enabled else "no", "signed" if settings.whatsapp_validate_signature else "unsigned")
-    console.print(table)
+    ui.render_table(table)
 
 
 def main():
