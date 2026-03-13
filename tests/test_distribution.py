@@ -112,3 +112,24 @@ def test_isolation_validator_accepts_user_site_bootstrap_fallback():
     ]
 
     assert module._is_successful_run(commands, "user-site-bootstrap", 9) is True
+
+
+def test_github_clone_validator_detects_dashscope_provider():
+    spec = importlib.util.spec_from_file_location(
+        "viki_validate_github_clone_live",
+        Path(__file__).resolve().parents[1] / "scripts" / "validate_github_clone_live.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    detected = module.detect_live_provider(
+        {
+            "DASHSCOPE_API_KEY": "redacted",
+            "VIKI_PROVIDER": "dashscope",
+            "VIKI_CODING_MODEL": "openai/qwen3-coder-next",
+        }
+    )
+
+    assert detected["provider"] == "dashscope"
+    assert "DASHSCOPE_API_KEY" in detected["forwarded_keys"]

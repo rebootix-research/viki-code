@@ -77,3 +77,10 @@ def test_cli_plain_flag_keeps_up_dry_run_readable(tmp_path: Path):
     assert "Workspace Runtime" in result.output
     assert "Dry run complete" in result.output
     assert "╭" not in result.output
+
+
+def test_cli_force_rich_can_render_styled_output_in_captured_runs(tmp_path: Path):
+    result = runner.invoke(app, ["--force-rich", "--theme", "premium", "up", str(tmp_path), "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "VIKI Code" in result.output
+    assert "\x1b[" in result.output or "╭" in result.output

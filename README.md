@@ -54,7 +54,7 @@ It is built for serious engineering workflows: bug-fixes, refactors, migrations,
 
 | Signal | Current 4.1.4 evidence |
 | --- | --- |
-| Local regression suite | `59 passed` |
+| Local regression suite | `69 passed` |
 | Live validation suite | `9/9 passed` on fresh repos |
 | Generic CLI live wins | `7/7 passed` |
 | Public live benchmark slice | `8/8 passed` |
@@ -137,6 +137,71 @@ docker pull ghcr.io/rebootix-research/viki-code:latest
 docker run --rm ghcr.io/rebootix-research/viki-code:latest --help
 ```
 
+## Provider Setup
+
+VIKI is built around LiteLLM-backed provider routing. The current public surface is strongest with:
+
+- OpenAI-compatible providers
+- Alibaba Cloud Model Studio / DashScope / Qwen
+- OpenRouter
+- Anthropic
+- local Ollama
+
+Recommended environment variables:
+
+```bash
+# Optional: pin the preferred backend when more than one is configured
+export VIKI_PROVIDER=dashscope
+
+# Global routing overrides
+export VIKI_REASONING_MODEL=openai/qwen3.5-plus
+export VIKI_CODING_MODEL=openai/qwen3-coder-next
+export VIKI_FAST_MODEL=openai/qwen3.5-plus
+
+# DashScope / Qwen
+export DASHSCOPE_API_KEY=...
+export DASHSCOPE_API_BASE=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+```
+
+OpenRouter example:
+
+```bash
+export VIKI_PROVIDER=openrouter
+export OPENROUTER_API_KEY=...
+export OPENROUTER_API_BASE=https://openrouter.ai/api/v1
+export VIKI_CODING_MODEL=openrouter/deepseek/deepseek-chat
+```
+
+Generic OpenAI-compatible endpoint example:
+
+```bash
+export VIKI_PROVIDER=openai-compatible
+export OPENAI_API_KEY=...
+export OPENAI_API_BASE=https://your-compatible-endpoint.example/v1
+export OPENAI_COMPAT_MODEL=openai/gpt-4o-mini
+```
+
+Anthropic example:
+
+```bash
+export VIKI_PROVIDER=anthropic
+export ANTHROPIC_API_KEY=...
+export VIKI_CODING_MODEL=claude-3-5-sonnet-latest
+```
+
+PowerShell example:
+
+```powershell
+$env:VIKI_PROVIDER = "dashscope"
+$env:DASHSCOPE_API_KEY = "<temporary key>"
+$env:DASHSCOPE_API_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+$env:VIKI_CODING_MODEL = "openai/qwen3-coder-next"
+viki providers
+viki doctor .
+```
+
+Use `viki providers` to inspect the selected backend, fallback order, required environment variables, and model routing before you run a live task.
+
 ## Quick Start
 
 Installed launcher locations:
@@ -156,6 +221,17 @@ viki up . --dry-run
 viki run "Fix the broken calculation and run the relevant tests" --path .
 ```
 
+PowerShell-friendly first run:
+
+```powershell
+git clone https://github.com/rebootix-research/viki-code.git
+cd viki-code
+python scripts/install.py --path .
+.\.viki-workspace\bin\viki-local.ps1 providers
+.\.viki-workspace\bin\viki-local.ps1 doctor .
+.\.viki-workspace\bin\viki-local.ps1 run "Fix the broken calculation and make tests pass" --path .
+```
+
 ## Terminal Experience
 
 VIKI ships with a premium terminal presentation layer for interactive use. In a capable terminal it renders a branded banner, session header, repo and branch context, provider and model strip, agent activity tables, approval panels, and readable diff previews.
@@ -164,13 +240,16 @@ VIKI ships with a premium terminal presentation layer for interactive use. In a 
 - Alternate high-contrast theme: `contrast`
 - Plain fallback: automatic in CI, non-interactive shells, and minimal terminals
 - Explicit plain mode: `viki --plain ...`
+- Forced themed capture for transcripts or screenshots: `viki --force-rich ...`
 
 Examples:
 
 ```bash
 viki --theme premium doctor .
+viki --theme premium providers
 viki --theme premium run "Fix the broken calculation and make tests pass" --path .
 viki --plain run "Inspect this repo and summarize the next safe step" --path .
+viki --force-rich --theme premium doctor .
 viki --theme premium diff <session_id> --path . --rendered
 ```
 

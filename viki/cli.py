@@ -6,7 +6,7 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 warnings.filterwarnings(
     "ignore",
@@ -52,12 +52,16 @@ ui = create_terminal_ui()
 console = ui.console
 
 
-def _configure_terminal_ui(plain_requested: bool, theme_name: str) -> None:
+def _configure_terminal_ui(plain_requested: bool, theme_name: str, force_rich: bool = False) -> None:
     global ui, console
     normalized = theme_name.lower().strip()
     if normalized not in PALETTES:
         raise typer.BadParameter(f"Unknown theme '{theme_name}'. Choose from: {', '.join(sorted(PALETTES))}")
-    ui = create_terminal_ui(plain_requested=plain_requested, theme_name=normalized)
+    ui = create_terminal_ui(
+        plain_requested=plain_requested,
+        theme_name=normalized,
+        force_terminal=True if force_rich and not plain_requested else None,
+    )
     console = ui.console
 
 
@@ -65,8 +69,9 @@ def _configure_terminal_ui(plain_requested: bool, theme_name: str) -> None:
 def _main_callback(
     plain: bool = typer.Option(False, "--plain", help="Render plain terminal output without color or panels."),
     theme: str = typer.Option("premium", "--theme", help="CLI theme to use. Supported: premium, contrast."),
+    force_rich: bool = typer.Option(False, "--force-rich", help="Force themed terminal rendering even when output is captured."),
 ):
-    _configure_terminal_ui(plain, theme)
+    _configure_terminal_ui(plain, theme, force_rich=force_rich)
 
 
 def _workspace_root(path: Path) -> Path:
@@ -93,17 +98,91 @@ def _provider_summary(provider: Optional[LiteLLMProvider] = None) -> str:
     current = provider or LiteLLMProvider()
     if not current._available:
         return "unavailable"
-    backends = current.available_backends()
-    return ", ".join(backends[:3]) if backends else "unconfigured"
+    diagnostics = current.diagnostics()
+    selected = diagnostics.get("selected_provider") or "unconfigured"
+    fallbacks = [item for item in diagnostics.get("fallback_chain", []) if item != selected]
+    if not fallbacks:
+        return selected
+    return f"{selected} -> {', '.join(fallbacks[:2])}"
 
 
-def _model_summary() -> str:
-    models = [
-        ("reason", settings.reasoning_model),
-        ("code", settings.coding_model),
-        ("fast", settings.quick_model),
-    ]
-    return " | ".join(f"{label}:{value}" for label, value in models)
+def _model_summary(provider: Optional[LiteLLMProvider] = None) -> str:
+    current = provider or LiteLLMProvider()
+    slots = current.model_slots() if current._available else {
+        "reasoning": settings.reasoning_model,
+        "coding": settings.coding_model,
+        "fast": settings.quick_model,
+    }
+    return " | ".join(
+        [
+            f"reason:{slots.get('reasoning', '-')}",
+            f"code:{slots.get('coding', '-')}",
+            f"fast:{slots.get('fast', '-')}",
+        ]
+    )
+
+
+def _provider_diagnostics(provider: Optional[LiteLLMProvider] = None) -> dict[str, Any]:
+    current = provider or LiteLLMProvider()
+    return current.diagnostics() if current._available else {
+        "litellm_available": False,
+        "preferred_provider": None,
+        "selected_provider": None,
+        "fallback_chain": [],
+        "configured_backends": [],
+        "model_slots": {
+            "reasoning": settings.reasoning_model,
+            "coding": settings.coding_model,
+            "fast": settings.quick_model,
+        },
+        "warnings": ["LiteLLM is unavailable in this environment."],
+        "hints": ["Install the project dependencies before running live tasks."],
+        "matrix": [],
+    }
+
+
+def _render_provider_overview(provider: Optional[LiteLLMProvider] = None) -> None:
+    diagnostics = _provider_diagnostics(provider)
+    table = Table(title="Provider Routing")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("LiteLLM", "OK" if diagnostics["litellm_available"] else "Missing")
+    table.add_row("Preferred provider", diagnostics.get("preferred_provider") or "auto")
+    table.add_row("Selected provider", diagnostics.get("selected_provider") or "unconfigured")
+    table.add_row("Fallback chain", ", ".join(diagnostics.get("fallback_chain", [])) or "none")
+    table.add_row("Configured backends", ", ".join(diagnostics.get("configured_backends", [])) or "none")
+    table.add_row("Reasoning model", diagnostics["model_slots"].get("reasoning", "-"))
+    table.add_row("Coding model", diagnostics["model_slots"].get("coding", "-"))
+    table.add_row("Fast model", diagnostics["model_slots"].get("fast", "-"))
+    ui.render_table(table)
+
+    if diagnostics.get("matrix"):
+        ui.section("Provider Matrix")
+        matrix = Table(expand=True)
+        matrix.add_column("Backend")
+        matrix.add_column("Status")
+        matrix.add_column("Required env")
+        matrix.add_column("Base")
+        matrix.add_column("Code model")
+        for row in diagnostics["matrix"]:
+            status = row["status"]
+            if row.get("selected"):
+                status = "selected"
+            elif row.get("preferred") and row["status"] == "missing":
+                status = "preferred-missing"
+            matrix.add_row(
+                row["name"],
+                status,
+                ", ".join(row["required_envs"]),
+                row["base"],
+                row["models"]["coding"],
+            )
+        ui.render_table(matrix)
+
+    for warning in diagnostics.get("warnings", []):
+        ui.warning(warning)
+    for hint in diagnostics.get("hints", []):
+        ui.info(hint)
 
 
 def _render_cli_header(
@@ -121,7 +200,7 @@ def _render_cli_header(
         repo_root=root,
         branch=_git_branch(root),
         provider=_provider_summary(provider),
-        models=_model_summary(),
+        models=_model_summary(provider),
         session_id=session_id,
         autonomy_mode=autonomy_mode,
         approval_mode=settings.approval_mode,
@@ -143,12 +222,16 @@ def _ensure_initialized(root: Path, force_env: bool = False) -> Path:
 
 def _env_template(workspace_db: Path) -> str:
     return f"""# VIKI routing
+VIKI_PROVIDER=
 VIKI_REASONING_MODEL=
 VIKI_CODING_MODEL=
 VIKI_FAST_MODEL=
 
 # Primary providers
+DASHSCOPE_API_KEY=
+DASHSCOPE_API_BASE={settings.dashscope_api_base}
 OPENROUTER_API_KEY=
+OPENROUTER_API_BASE=https://openrouter.ai/api/v1
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 GOOGLE_API_KEY=
@@ -204,7 +287,7 @@ def init(path: Path = typer.Argument(Path('.'), help="Workspace root"), force: b
         raise typer.Exit(1)
     workspace = _ensure_initialized(root, force_env=force)
     ui.success(f"Initialized VIKI workspace at {workspace}")
-    ui.info("Edit .env, then run: viki doctor")
+    ui.info("Export provider env vars or edit .env, then run: viki doctor")
 
 
 @app.command()
@@ -243,9 +326,10 @@ def doctor(path: Path = typer.Argument(Path('.'), help="Workspace root")):
     table.add_row("Workspace", "OK" if workspace.exists() else "Missing")
     table.add_row("Platform", profile.os_name)
     table.add_row("Shell", profile.shell)
+    diagnostics = _provider_diagnostics(provider)
     table.add_row("LiteLLM", "OK" if provider._available else "Missing")
-    active_backends = provider.available_backends() if provider._available else []
-    table.add_row("Providers", ", ".join(active_backends) if active_backends else "No API backend configured")
+    table.add_row("Providers", ", ".join(diagnostics.get("configured_backends", [])) or "No API backend configured")
+    table.add_row("Selected provider", diagnostics.get("selected_provider") or "auto")
 
     try:
         import docker
@@ -272,6 +356,14 @@ def doctor(path: Path = typer.Argument(Path('.'), help="Workspace root")):
     table.add_row("API", f"{settings.api_host}:{settings.api_port}")
     table.add_row("Launcher", profile.launcher_hint)
     ui.render_table(table)
+    _render_provider_overview(provider)
+
+
+@app.command("providers")
+def providers_status():
+    provider = LiteLLMProvider()
+    _render_cli_header("Providers", root=Path("."), provider=provider, autonomy_mode="provider-routing", validation_state="diagnostic")
+    _render_provider_overview(provider)
 
 
 @app.command("platforms")
@@ -322,7 +414,8 @@ def run(
     provider = LiteLLMProvider()
     _render_cli_header("Live Session", root=root, provider=provider, autonomy_mode=mode, validation_state="pending")
     if not provider.validate_config():
-        ui.error("No provider configuration detected. Add at least one API backend in .env.")
+        ui.error("No provider configuration detected. Export provider env vars or configure .env before running live tasks.")
+        _render_provider_overview(provider)
         raise typer.Exit(1)
 
     async def main():
@@ -609,7 +702,7 @@ def skills_invoke(
     try:
         parsed_payload = json.loads(payload)
     except json.JSONDecodeError as exc:
-        console.print(f"[red]Invalid payload JSON: {exc}[/red]")
+        ui.error(f"Invalid payload JSON: {exc}")
         raise typer.Exit(1)
     context = {
         "workspace": str(_workspace_root(path)),
@@ -640,9 +733,9 @@ def skills_validate(path: Path = typer.Argument(Path('.'), help="Workspace root"
             invalid.append((record.name, str(exc)))
     if invalid:
         for name, error in invalid:
-            console.print(f"[red]{name}: {error}[/red]")
+            ui.error(f"{name}: {error}")
         raise typer.Exit(1)
-    console.print("[green]All skills loaded successfully[/green]")
+    ui.success("All skills loaded successfully")
 
 
 @approvals_app.command("list")
@@ -719,7 +812,8 @@ def evals_run(
     root = _workspace_root(path)
     provider = ScriptedEvalProvider() if offline_scripted else LiteLLMProvider()
     if not offline_scripted and not provider.validate_config():
-        rprint("[red]No provider configuration detected. Add at least one API backend in .env.[/red]")
+        ui.error("No provider configuration detected. Export provider env vars or configure .env before running benchmarks.")
+        _render_provider_overview(provider)
         raise typer.Exit(1)
 
     async def main():
@@ -741,7 +835,7 @@ def evals_compare(
     baselines = {}
     for item in baseline:
         if "=" not in item:
-            console.print(f"[red]Invalid baseline: {item}[/red]")
+            ui.error(f"Invalid baseline: {item}")
             raise typer.Exit(1)
         name, report_path = item.split("=", 1)
         baselines[name] = json.loads(Path(report_path).read_text(encoding="utf-8"))

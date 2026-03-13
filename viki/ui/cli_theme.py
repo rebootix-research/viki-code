@@ -251,14 +251,15 @@ class TerminalUI:
             route = item.get("route", {})
             task = item.get("task", {})
             sync = (item.get("sync", {}) or {}).get("status", "-")
-            validation = f"{item.get('validation_successes', 0)} ok / {item.get('evidence', {}).get('failure_count', 0)} fail"
+            failure_count = item.get("evidence", {}).get("failure_count", 0)
+            validation = f"{item.get('validation_successes', 0)} ok / {failure_count} fail"
             files = ", ".join((item.get("changed_files") or item.get("candidate_changed_files") or [])[:3]) or "-"
             table.add_row(
                 str(task.get("title") or task.get("id") or "-"),
                 str(route.get("lane", "-")),
-                sync,
+                self._status_text(sync),
                 f"{float(item.get('confidence', 0.0) or 0.0):.2f}",
-                validation,
+                self._status_text(validation, ok=failure_count == 0),
                 files,
             )
         self.render_table(table)
@@ -328,6 +329,7 @@ class TerminalUI:
 
     def render_run_summary(self, result: dict[str, Any]) -> None:
         self.section("Execution Summary")
+        ok = str(result.get("status", "-")) == "completed"
         rows = [
             ("Status", str(result.get("status", "-"))),
             ("Changed files", str(len(result.get("changed_files", [])))),
@@ -344,15 +346,15 @@ class TerminalUI:
         table.add_column(ratio=1)
         table.add_column(ratio=1)
         for index in range(0, len(rows), 2):
-            left = self._kv_text(*rows[index])
+            left = self._kv_text(*rows[index], value_style="viki.success" if index == 0 and ok else None)
             right = self._kv_text(*rows[index + 1]) if index + 1 < len(rows) else Text("")
             table.add_row(left, right)
         self.console.print(Panel(table, border_style="viki.border", box=box.ROUNDED))
 
-    def _kv_text(self, label: str, value: str) -> Text:
+    def _kv_text(self, label: str, value: str, value_style: str | None = None) -> Text:
         text = Text()
         text.append(f"{label.upper()} ", style="viki.badge.label")
-        text.append(value, style="viki.badge.value")
+        text.append(value, style=value_style or "viki.badge.value")
         return text
 
     def _message(self, message: str, prefix: str, style: str) -> None:
@@ -374,3 +376,13 @@ class TerminalUI:
                 style = "viki.text"
             text.append(line + "\n", style=style)
         return text if text else Text("No diff available.", style="viki.muted")
+
+    def _status_text(self, value: str, *, ok: Optional[bool] = None) -> Text:
+        if self.plain:
+            return Text(value)
+        normalized = value.lower()
+        if ok is True or any(token in normalized for token in ("committed", "completed", "approved", "green", "0 fail")):
+            return Text(value, style="viki.success")
+        if ok is False or any(token in normalized for token in ("fail", "rejected", "blocked", "isolated", "error")):
+            return Text(value, style="viki.warning" if "fail" in normalized or "isolated" in normalized else "viki.danger")
+        return Text(value, style="viki.text")
