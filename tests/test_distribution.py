@@ -158,6 +158,39 @@ def test_github_clone_validator_isolates_selected_provider_env():
     assert isolated["VIKI_PROVIDER"] == "dashscope"
 
 
+def test_onboarding_clone_validator_detects_nvidia_provider():
+    spec = importlib.util.spec_from_file_location(
+        "viki_validate_onboarding_clone_live",
+        Path(__file__).resolve().parents[1] / "scripts" / "validate_onboarding_clone_live.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    detected = module.detect_live_provider(
+        {
+            "OPENAI_API_KEY": "redacted",
+            "OPENAI_API_BASE": "https://integrate.api.nvidia.com/v1",
+        }
+    )
+
+    assert detected["provider"] == "nvidia"
+
+
+def test_onboarding_clone_validator_builds_nvidia_setup_input():
+    spec = importlib.util.spec_from_file_location(
+        "viki_validate_onboarding_clone_live",
+        Path(__file__).resolve().parents[1] / "scripts" / "validate_onboarding_clone_live.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    setup_input = module.setup_wizard_input("nvidia")
+
+    assert setup_input.startswith("6\n1\n")
+
+
 def test_github_clone_validator_remove_tree_handles_readonly_file(tmp_path: Path):
     spec = importlib.util.spec_from_file_location(
         "viki_validate_github_clone_live",

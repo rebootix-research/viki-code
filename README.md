@@ -181,11 +181,13 @@ The guided setup flow is the primary path for normal users. It hides provider pr
 - OpenRouter
 - Anthropic
 - Azure OpenAI
-- NVIDIA via the OpenAI-compatible transport
+- NVIDIA with a first-class Kimi 2.5 preset over the OpenAI-compatible transport
 - Generic OpenAI-compatible endpoints
 - Ollama
 
 The wizard asks for the minimum needed values, lets you reuse an API key that is already present in your shell, offers a sensible model profile, and saves the resulting config to a user-level file outside the repository.
+
+For NVIDIA users, the wizard keeps the transport details out of the normal path: choose the `NVIDIA` preset, pick `Kimi 2.5`, paste the key, accept the default base URL, and start prompting.
 
 Optional setup in the same flow:
 

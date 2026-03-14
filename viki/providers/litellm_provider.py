@@ -66,6 +66,19 @@ BACKENDS: dict[str, Backend] = {
         base_env="OPENAI_API_BASE",
         prefixes=("gpt-", "o1", "o3", "o4", "openai/"),
     ),
+    "nvidia": Backend(
+        name="nvidia",
+        description="NVIDIA hosted models through the OpenAI-compatible transport",
+        required_envs=("NVIDIA_API_KEY", "NVIDIA_API_BASE"),
+        defaults=(
+            "openai/moonshotai/kimi-k2-5",
+            "openai/moonshotai/kimi-k2-5",
+            "openai/moonshotai/kimi-k2-5",
+        ),
+        base_env="NVIDIA_API_BASE",
+        base_default="https://integrate.api.nvidia.com/v1",
+        prefixes=("openai/moonshotai/", "moonshotai/"),
+    ),
     "anthropic": Backend(
         name="anthropic",
         description="Anthropic Claude via LiteLLM",
@@ -294,6 +307,11 @@ class LiteLLMProvider(LLMProvider):
             "Use VIKI_REASONING_MODEL, VIKI_CODING_MODEL, and VIKI_FAST_MODEL to override the role models across providers.",
             "Use --plain for CI/log-safe output and --force-rich when you want themed transcripts in captured sessions.",
         ]
+        if "nvidia" in configured_names:
+            hints.insert(
+                1,
+                "NVIDIA is routed through an OpenAI-compatible endpoint internally, so the setup wizard keeps the transport details hidden behind the NVIDIA preset.",
+            )
         return {
             "litellm_available": self._available,
             "preferred_provider": preferred,
@@ -318,13 +336,19 @@ class LiteLLMProvider(LLMProvider):
             key = os.getenv("OPENAI_API_KEY")
             base = os.getenv("OPENAI_API_BASE")
             return bool(key and (not base or "api.openai.com" in base))
+        if backend.name == "nvidia":
+            key = os.getenv("NVIDIA_API_KEY") or os.getenv("OPENAI_API_KEY")
+            base = os.getenv("NVIDIA_API_BASE") or os.getenv("OPENAI_API_BASE") or backend.base_default
+            return bool(key and base and "integrate.api.nvidia.com" in base)
         if backend.name == "openai-compatible":
             key = os.getenv("OPENAI_API_KEY")
             base = os.getenv("OPENAI_API_BASE")
-            return bool(key and base and "api.openai.com" not in base)
+            return bool(key and base and "api.openai.com" not in base and "integrate.api.nvidia.com" not in base)
         return all(os.getenv(env_name) for env_name in backend.required_envs)
 
     def _backend_base(self, backend: Backend) -> Optional[str]:
+        if backend.name == "nvidia":
+            return os.getenv("NVIDIA_API_BASE") or os.getenv("OPENAI_API_BASE") or backend.base_default
         if backend.base_env:
             return os.getenv(backend.base_env) or backend.base_default
         return None
@@ -346,6 +370,10 @@ class LiteLLMProvider(LLMProvider):
         if backend.name == "openai-compatible":
             compat = os.getenv("OPENAI_COMPAT_MODEL", "").strip()
             return compat or backend.defaults[ROLE_NAMES.index(role_name)]
+        if backend.name == "nvidia":
+            nvidia_model = os.getenv("NVIDIA_MODEL", "").strip()
+            compat = os.getenv("OPENAI_COMPAT_MODEL", "").strip()
+            return nvidia_model or compat or backend.defaults[ROLE_NAMES.index(role_name)]
         if backend.name == "azure-openai":
             azure_model = os.getenv("AZURE_MODEL", "").strip()
             return azure_model or backend.defaults[ROLE_NAMES.index(role_name)]
@@ -411,6 +439,11 @@ class LiteLLMProvider(LLMProvider):
         if backend.name == "openai-compatible":
             return {
                 "api_key": os.getenv("OPENAI_API_KEY"),
+                "api_base": self._backend_base(backend),
+            }
+        if backend.name == "nvidia":
+            return {
+                "api_key": os.getenv("NVIDIA_API_KEY") or os.getenv("OPENAI_API_KEY"),
                 "api_base": self._backend_base(backend),
             }
         if backend.name == "openai":

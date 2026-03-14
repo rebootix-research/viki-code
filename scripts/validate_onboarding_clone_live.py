@@ -15,9 +15,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from viki.infrastructure.security import SecurityScanner
+from viki.onboarding import iter_provider_presets
 from viki.platforms import PlatformSupport
 
 PROVIDER_ENV_PRIORITY = [
+    ("nvidia", ["NVIDIA_API_KEY"], ["NVIDIA_API_KEY", "NVIDIA_API_BASE", "OPENAI_COMPAT_MODEL", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
     ("dashscope", ["DASHSCOPE_API_KEY"], ["DASHSCOPE_API_KEY", "DASHSCOPE_API_BASE", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
     ("openrouter", ["OPENROUTER_API_KEY"], ["OPENROUTER_API_KEY", "OPENROUTER_API_BASE", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
     ("openai-compatible", ["OPENAI_API_KEY", "OPENAI_API_BASE"], ["OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_COMPAT_MODEL", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
@@ -34,6 +36,7 @@ KNOWN_PROVIDER_SECRET_KEYS = {
     "DEEPSEEK_API_KEY",
     "GROQ_API_KEY",
     "MISTRAL_API_KEY",
+    "NVIDIA_API_KEY",
     "TOGETHERAI_API_KEY",
     "FIREWORKS_API_KEY",
     "XAI_API_KEY",
@@ -44,6 +47,27 @@ KNOWN_PROVIDER_SECRET_KEYS = {
 
 
 def detect_live_provider(env: dict[str, str]) -> dict[str, object]:
+    nvidia_key = env.get("NVIDIA_API_KEY") or env.get("OPENAI_API_KEY")
+    nvidia_base = env.get("NVIDIA_API_BASE") or env.get("OPENAI_API_BASE") or ""
+    if nvidia_key and "integrate.api.nvidia.com" in nvidia_base:
+        return {
+            "provider": "nvidia",
+            "forwarded_keys": [
+                key
+                for key in [
+                    "NVIDIA_API_KEY",
+                    "NVIDIA_API_BASE",
+                    "OPENAI_API_KEY",
+                    "OPENAI_API_BASE",
+                    "OPENAI_COMPAT_MODEL",
+                    "VIKI_PROVIDER",
+                    "VIKI_REASONING_MODEL",
+                    "VIKI_CODING_MODEL",
+                    "VIKI_FAST_MODEL",
+                ]
+                if env.get(key)
+            ],
+        }
     preferred = env.get("VIKI_PROVIDER", "").strip().lower()
     if preferred:
         for name, required, keys in PROVIDER_ENV_PRIORITY:
@@ -67,7 +91,19 @@ def isolate_provider_env(env: dict[str, str], detected: dict[str, object]) -> di
         isolated.setdefault("DASHSCOPE_API_BASE", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
     if detected.get("provider") == "openrouter":
         isolated.setdefault("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
+    if detected.get("provider") == "nvidia":
+        isolated.setdefault("NVIDIA_API_KEY", isolated.get("OPENAI_API_KEY", ""))
+        isolated.setdefault("NVIDIA_API_BASE", isolated.get("OPENAI_API_BASE", "https://integrate.api.nvidia.com/v1"))
     return isolated
+
+
+def setup_wizard_input(provider_slug: str) -> str:
+    presets = list(iter_provider_presets())
+    try:
+        provider_index = next(index for index, preset in enumerate(presets, start=1) if preset.slug == provider_slug)
+    except StopIteration as exc:
+        raise RuntimeError(f"Unsupported provider slug for onboarding validation: {provider_slug}") from exc
+    return f"{provider_index}\n1\ny\n\n1\n1\n1\nn\nn\n"
 
 
 def remove_tree(path: Path) -> None:
@@ -155,7 +191,7 @@ def main() -> None:
     commands.append(run_powershell("viki --plain version", clone_dir, env, security))
     commands.append(run_powershell("viki --plain providers", clone_dir, env, security))
 
-    setup_input = "1\n1\ny\n\n1\n1\n1\nn\nn\n"
+    setup_input = setup_wizard_input(str(detected["provider"]))
     commands.append(run_powershell("viki setup .", clone_dir, env, security, timeout=1800, input_text=setup_input))
     commands.append(run_powershell("viki --plain doctor .", clone_dir, env, security))
 

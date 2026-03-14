@@ -56,6 +56,29 @@ def test_setup_wizard_can_configure_telegram_and_skip_whatsapp(tmp_path: Path):
     assert "WHATSAPP_ENABLED=false" in content
 
 
+def test_setup_wizard_supports_nvidia_kimi_profile(tmp_path: Path):
+    config_home = tmp_path / "config-home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = runner.invoke(
+        app,
+        ["setup", str(workspace)],
+        env={
+            "VIKI_CONFIG_HOME": str(config_home),
+            "NVIDIA_API_KEY": "redacted",
+            "NVIDIA_API_BASE": "https://integrate.api.nvidia.com/v1",
+        },
+        input="6\n1\ny\n\n1\n1\n1\nn\nn\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    content = (config_home / "config.env").read_text(encoding="utf-8")
+    assert "VIKI_PROVIDER=nvidia" in content
+    assert "NVIDIA_API_KEY=redacted" in content
+    assert "OPENAI_COMPAT_MODEL=openai/moonshotai/kimi-k2-5" in content
+
+
 def test_default_entry_runs_guided_setup_and_initializes_workspace(tmp_path: Path, monkeypatch):
     config_home = tmp_path / "config-home"
     workspace = tmp_path / "repo"

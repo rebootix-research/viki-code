@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import warnings
@@ -240,6 +241,34 @@ def _prompt_text(label: str, *, default: str | None = None, secret: bool = False
     raise typer.BadParameter(f"{label} is required.")
 
 
+def _existing_secret_for_preset(preset: ProviderPreset) -> str:
+    candidates: list[str] = []
+    if preset.secret_env:
+        candidates.append(preset.secret_env)
+    if preset.slug == "nvidia":
+        candidates.extend(["OPENAI_API_KEY"])
+    for env_name in candidates:
+        field_name = env_name.lower()
+        value = str(os.getenv(env_name, "") or getattr(settings, field_name, None) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _existing_base_for_preset(preset: ProviderPreset) -> str:
+    candidates: list[str] = []
+    if preset.base_env:
+        candidates.append(preset.base_env)
+    if preset.slug == "nvidia":
+        candidates.extend(["OPENAI_API_BASE"])
+    for env_name in candidates:
+        field_name = env_name.lower()
+        value = str(os.getenv(env_name, "") or getattr(settings, field_name, None) or "").strip()
+        if value:
+            return value
+    return str(preset.base_default or "")
+
+
 def _setup_provider_configuration() -> tuple[dict[str, str], dict[str, str]]:
     presets = list(iter_provider_presets())
     index = _prompt_choice(
@@ -261,7 +290,7 @@ def _setup_provider_configuration() -> tuple[dict[str, str], dict[str, str]]:
 
     secret_value: str | None = None
     if preset.secret_env:
-        env_secret = str(getattr(settings, preset.secret_env.lower(), None) or "").strip()
+        env_secret = _existing_secret_for_preset(preset)
         if env_secret and typer.confirm(f"Use the existing {preset.secret_env} from this shell?", default=True):
             secret_value = env_secret
         else:
@@ -269,7 +298,7 @@ def _setup_provider_configuration() -> tuple[dict[str, str], dict[str, str]]:
 
     base_value: str | None = None
     if preset.base_env:
-        current_base = getattr(settings, preset.base_env.lower(), None) or preset.base_default or ""
+        current_base = _existing_base_for_preset(preset)
         base_value = _prompt_text(f"{preset.label} base URL", default=str(current_base) if current_base else None, allow_empty=False)
 
     azure_api_version: str | None = None

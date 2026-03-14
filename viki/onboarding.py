@@ -101,12 +101,12 @@ MODEL_PROFILES = {
     ),
     "nvidia": (
         ModelProfile(
-            slug="nim-default",
-            label="NVIDIA NIM default",
-            summary="NVIDIA hosted models through the OpenAI-compatible transport.",
-            reasoning="openai/meta/llama-3.1-70b-instruct",
-            coding="openai/meta/llama-3.1-70b-instruct",
-            fast="openai/meta/llama-3.1-8b-instruct",
+            slug="kimi-2-5",
+            label="Kimi 2.5",
+            summary="Moonshot AI Kimi 2.5 on NVIDIA's OpenAI-compatible runtime.",
+            reasoning="openai/moonshotai/kimi-k2-5",
+            coding="openai/moonshotai/kimi-k2-5",
+            fast="openai/moonshotai/kimi-k2-5",
         ),
     ),
     "ollama": (
@@ -173,12 +173,12 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         slug="nvidia",
         label="NVIDIA",
         description="NVIDIA hosted models through the OpenAI-compatible transport.",
-        provider_value="openai-compatible",
-        secret_env="OPENAI_API_KEY",
-        base_env="OPENAI_API_BASE",
+        provider_value="nvidia",
+        secret_env="NVIDIA_API_KEY",
+        base_env="NVIDIA_API_BASE",
         base_default="https://integrate.api.nvidia.com/v1",
         model_profiles=MODEL_PROFILES["nvidia"],
-        notes="The NVIDIA preset uses the OpenAI-compatible routing path under the hood.",
+        notes="The NVIDIA preset uses the OpenAI-compatible transport under the hood, but VIKI keeps the setup and model selection product-friendly.",
     ),
     ProviderPreset(
         slug="openai-compatible",
@@ -242,8 +242,12 @@ def build_provider_env(preset: ProviderPreset, profile: ModelProfile, *, secret_
         env["AZURE_API_VERSION"] = azure_api_version
     if preset.slug == "openai-compatible" and not env.get("OPENAI_COMPAT_MODEL"):
         env["OPENAI_COMPAT_MODEL"] = profile.coding
-    if preset.slug == "nvidia" and not env.get("OPENAI_COMPAT_MODEL"):
-        env["OPENAI_COMPAT_MODEL"] = profile.coding
+    if preset.slug == "nvidia":
+        if secret_value:
+            env["NVIDIA_API_KEY"] = secret_value
+        if base_value:
+            env["NVIDIA_API_BASE"] = base_value
+        env.setdefault("OPENAI_COMPAT_MODEL", profile.coding)
     if preset.slug == "ollama":
         env["OLLAMA_MODEL"] = profile.coding
     return env
@@ -258,7 +262,15 @@ def onboarding_state(root: Path) -> dict[str, object]:
     provider_ready = bool(
         provider_value or any(
             config_values.get(key)
-            for key in ("DASHSCOPE_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "AZURE_API_KEY", "OLLAMA_BASE_URL")
+            for key in (
+                "DASHSCOPE_API_KEY",
+                "OPENAI_API_KEY",
+                "OPENROUTER_API_KEY",
+                "ANTHROPIC_API_KEY",
+                "AZURE_API_KEY",
+                "NVIDIA_API_KEY",
+                "OLLAMA_BASE_URL",
+            )
         )
     )
     return {

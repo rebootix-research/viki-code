@@ -74,8 +74,26 @@ def test_cli_plain_providers_command_reports_selection():
 
 def test_nvidia_onboarding_preset_maps_to_openai_compatible_transport():
     preset = get_provider_preset("nvidia")
-    profile = get_model_profile(preset, "nim-default")
+    profile = get_model_profile(preset, "kimi-2-5")
 
-    assert preset.provider_value == "openai-compatible"
+    assert preset.provider_value == "nvidia"
     assert preset.base_default == "https://integrate.api.nvidia.com/v1"
-    assert profile.coding == "openai/meta/llama-3.1-70b-instruct"
+    assert profile.coding == "openai/moonshotai/kimi-k2-5"
+
+
+def test_litellm_provider_surfaces_nvidia_backend_cleanly():
+    with patch.dict(
+        os.environ,
+        {
+            "NVIDIA_API_KEY": "redacted",
+            "NVIDIA_API_BASE": "https://integrate.api.nvidia.com/v1",
+            "VIKI_PROVIDER": "nvidia",
+        },
+        clear=True,
+    ):
+        provider = LiteLLMProvider()
+        if not provider._available:
+            return
+        diagnostics = provider.diagnostics()
+        assert diagnostics["selected_provider"] == "nvidia"
+        assert diagnostics["model_slots"]["coding"] == "openai/moonshotai/kimi-k2-5"
