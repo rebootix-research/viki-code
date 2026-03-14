@@ -110,6 +110,13 @@ def setup_wizard_input(provider_slug: str) -> str:
     return f"{provider_index}\n1\ny\n\n1\n1\n1\nn\nn\n"
 
 
+def bugfix_prompt_variants() -> list[str]:
+    return [
+        "Fix the broken calculation in this repository and make the tests pass.",
+        "The multiply function in this repository is wrong. Repair the implementation so multiplication is correct and run the relevant test before you finish.",
+    ]
+
+
 def remove_tree(path: Path) -> None:
     def _handle_remove_readonly(func, target, exc_info):  # pragma: no cover - platform dependent
         os.chmod(target, stat.S_IWRITE)
@@ -205,23 +212,34 @@ def main() -> None:
     prompt_first_result = run_powershell("viki --force-rich --theme premium", bugfix_repo, env, security, timeout=1800, input_text="\n")
     commands.append(prompt_first_result)
 
-    live_result = run_powershell(
-        "viki --force-rich --theme premium run \"The multiplication behavior is broken in this repository. Repair it and run the relevant tests before you finish.\" --path .",
-        bugfix_repo,
-        env,
-        security,
-        timeout=3600,
-    )
-    commands.append(live_result)
-
-    session_id = parse_session_id(str(live_result["stdout"]))
+    live_result: dict[str, object] | None = None
+    session_id: str | None = None
+    retry_used = False
+    for prompt in bugfix_prompt_variants():
+        candidate = run_powershell(
+            f"viki --force-rich --theme premium run \"{prompt}\" --path .",
+            bugfix_repo,
+            env,
+            security,
+            timeout=3600,
+        )
+        commands.append(candidate)
+        live_result = candidate
+        session_id = parse_session_id(str(candidate["stdout"]))
+        pytest_candidate = run_powershell("python -m pytest --rootdir . tests/test_calculator.py -q", bugfix_repo, env, security, timeout=600)
+        commands.append(pytest_candidate)
+        calculator_text = (bugfix_repo / "app" / "calculator.py").read_text(encoding="utf-8")
+        if candidate["returncode"] == 0 and "return a * b" in calculator_text and pytest_candidate["returncode"] == 0:
+            break
+        retry_used = True
+    assert live_result is not None
     if session_id:
         commands.append(run_powershell(f"viki --force-rich --theme premium diff {session_id} --path '{bugfix_repo}' --rendered", bugfix_repo, env, security, timeout=600))
 
-    commands.append(run_powershell("python -m pytest --rootdir . tests/test_calculator.py -q", bugfix_repo, env, security, timeout=600))
-
     config_saved = config_home.joinpath("config.env").exists()
     remove_tree(config_home)
+    calculator_text = (bugfix_repo / "app" / "calculator.py").read_text(encoding="utf-8")
+    latest_pytest = commands[-2] if session_id else commands[-1]
 
     summary = {
         "repo_url": args.repo_url,
@@ -235,14 +253,15 @@ def main() -> None:
         "setup_wizard_ok": commands[5]["returncode"] == 0 and config_saved,
         "doctor_ok": commands[6]["returncode"] == 0,
         "prompt_first_ok": prompt_first_result["returncode"] == 0 and "Prompt-First Console" in str(prompt_first_result["stdout"]),
-        "live_bugfix_ok": live_result["returncode"] == 0 and "return a * b" in (bugfix_repo / "app" / "calculator.py").read_text(encoding="utf-8"),
+        "live_bugfix_ok": live_result["returncode"] == 0 and "return a * b" in calculator_text and latest_pytest["returncode"] == 0,
         "rendered_diff_ok": bool(session_id) and any(" --rendered" in str(item["command"]) and item["returncode"] == 0 for item in commands),
-        "pytest_ok": commands[-1]["returncode"] == 0,
+        "pytest_ok": latest_pytest["returncode"] == 0,
         "telegram_prompt_visible": "Telegram" in str(commands[5]["stdout"]),
         "whatsapp_prompt_visible": "WhatsApp" in str(commands[5]["stdout"]),
         "session_id": session_id,
         "config_home": str(config_home),
         "config_home_removed": not config_home.exists(),
+        "bugfix_retry_used": retry_used,
         "user_bin": str(user_bin),
     }
 
