@@ -114,6 +114,7 @@ def bugfix_prompt_variants() -> list[str]:
     return [
         "Fix the broken calculation in this repository and make the tests pass.",
         "The multiply function in this repository is wrong. Repair the implementation so multiplication is correct and run the relevant test before you finish.",
+        "Update this repository so multiply(3, 4) returns 12, then run the relevant test and stop when it is green.",
     ]
 
 
