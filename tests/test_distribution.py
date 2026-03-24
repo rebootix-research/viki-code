@@ -282,6 +282,26 @@ def test_connected_product_validator_scrubs_unforwarded_provider_secrets():
     assert isolated["VIKI_PROVIDER"] == "dashscope"
 
 
+def test_connected_product_validator_extracts_provider_failures():
+    spec = importlib.util.spec_from_file_location(
+        "viki_validate_connected_product_clone_live",
+        Path(__file__).resolve().parents[1] / "scripts" / "validate_connected_product_clone_live.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    error = module.extract_provider_failure_text(
+        {
+            "stdout": "[ERROR] VIKI run failed: All provider attempts failed. dashscope:openai/qwen3.5-plus -> Incorrect API key provided",
+            "stderr": "",
+        }
+    )
+
+    assert error is not None
+    assert "All provider attempts failed." in error
+
+
 def test_bootstrap_retries_with_system_site_packages_and_no_deps(monkeypatch, tmp_path: Path):
     spec = importlib.util.spec_from_file_location(
         "viki_bootstrap",

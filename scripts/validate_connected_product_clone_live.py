@@ -136,6 +136,25 @@ def parse_session_id(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+def extract_provider_failure_text(command_result: dict[str, object]) -> str | None:
+    combined = "\n".join(
+        part for part in (str(command_result.get("stdout", "")), str(command_result.get("stderr", ""))) if part.strip()
+    )
+    for marker in (
+        "Incorrect API key provided",
+        "Authorization failed",
+        "exceeded your current quota",
+        "All provider attempts failed.",
+        "provider attempt failed",
+    ):
+        if marker in combined:
+            for line in combined.splitlines():
+                if marker in line:
+                    return line.strip()[:400]
+            return marker
+    return None
+
+
 def secret_match_count(root: Path, env: dict[str, str], forwarded_keys: list[str]) -> int:
     values = [env.get(key, "") for key in forwarded_keys if env.get(key)]
     if not values:
@@ -257,6 +276,8 @@ def main() -> None:
     calculator_text = (bugfix_repo / "app" / "calculator.py").read_text(encoding="utf-8")
     auth_text = (refactor_repo / "packages" / "shared" / "auth.py").read_text(encoding="utf-8")
     service_text = (refactor_repo / "apps" / "api" / "service.py").read_text(encoding="utf-8")
+    bugfix_error = extract_provider_failure_text(live_bugfix)
+    refactor_error = extract_provider_failure_text(live_refactor)
 
     summary = {
         "repo_url": args.repo_url,
@@ -278,6 +299,9 @@ def main() -> None:
         "resume_ok": bool(bugfix_session) and any("sessions continue" in str(item["command"]) and item["returncode"] == 0 for item in commands),
         "rendered_diff_ok": bool(bugfix_session) and any(" --rendered" in str(item["command"]) and item["returncode"] == 0 for item in commands),
         "live_refactor_ok": live_refactor["returncode"] == 0 and "def normalize_account" in auth_text and "normalize_account" in service_text and refactor_pytest["returncode"] == 0,
+        "live_bugfix_error": bugfix_error,
+        "live_refactor_error": refactor_error,
+        "live_provider_blocked": bool(bugfix_error or refactor_error),
         "config_home_removed": not config_home.exists(),
     }
     summary["secret_matches"] = secret_match_count(output, env, list(detected["forwarded_keys"]))
