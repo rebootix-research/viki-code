@@ -172,6 +172,39 @@ def test_run_command_falls_back_to_local_when_sandbox_execution_breaks(tmp_path:
     assert "--rootdir ." in result["effective_command"]
 
 
+def test_run_command_disables_repeated_sandbox_retries_after_failure(tmp_path: Path, monkeypatch):
+    class BrokenSandbox:
+        def __init__(self):
+            self.client = object()
+            self.calls = 0
+
+        @property
+        def available(self):
+            return self.client is not None
+
+        def run_command(self, *args, **kwargs):
+            self.calls += 1
+            raise RuntimeError("sandbox image missing")
+
+    sandbox = BrokenSandbox()
+    executor = WorkspaceExecutor(tmp_path, sandbox=sandbox)
+
+    class Completed:
+        returncode = 0
+        stdout = "ok\n"
+        stderr = ""
+
+    monkeypatch.setattr("viki.core.actions.settings.sandbox_enabled", True)
+    monkeypatch.setattr("viki.core.actions.subprocess.run", lambda *args, **kwargs: Completed())
+
+    first = executor.run_command("python -m pytest -q", root=tmp_path)
+    second = executor.run_command("python -m pytest -q", root=tmp_path)
+
+    assert first["returncode"] == 0
+    assert second["returncode"] == 0
+    assert sandbox.calls == 1
+
+
 def test_skill_factory_manifest_and_registry(tmp_path: Path):
     factory = AutoSkillFactory(str(tmp_path), provider=None)
 

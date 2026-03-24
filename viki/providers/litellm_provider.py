@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from .._log import structlog
 from ..config import settings
+from ..ollama_support import DEFAULT_OLLAMA_BASE_URL, get_ollama_runtime_status
 from .base import LLMProvider
 
 logger = structlog.get_logger()
@@ -250,6 +251,34 @@ class LiteLLMProvider(LLMProvider):
         raw = os.getenv("VIKI_PROVIDER", "").strip().lower()
         return raw or None
 
+    def _provider_allow_fallbacks(self) -> bool:
+        raw = os.getenv("VIKI_PROVIDER_ALLOW_FALLBACKS", "").strip().lower()
+        if raw in {"1", "true", "yes", "on"}:
+            return True
+        if raw in {"0", "false", "no", "off"}:
+            return False
+        return bool(getattr(settings, "viki_provider_allow_fallbacks", False))
+
+    def _preferred_ollama_model_name(self) -> str:
+        explicit = (
+            os.getenv("OLLAMA_MODEL", "").strip()
+            or str(getattr(settings, "ollama_model", "") or "").strip()
+            or settings.local_model.removeprefix("ollama/")
+        )
+        return explicit or settings.local_model.removeprefix("ollama/")
+
+    def _ollama_status(self):
+        return get_ollama_runtime_status(
+            allow_pull=False,
+            preferred_model=self._preferred_ollama_model_name(),
+        )
+
+    def _normalize_ollama_model(self, model_name: str) -> str:
+        normalized = model_name.strip()
+        if normalized.startswith("ollama/"):
+            return normalized
+        return f"ollama/{normalized}"
+
     def model_slots(self) -> Dict[str, str]:
         selected = self._ordered_configured_backends()
         first_backend = selected[0] if selected else None
@@ -271,10 +300,18 @@ class LiteLLMProvider(LLMProvider):
             )
 
         configured = self._ordered_configured_backends()
+        all_configured = [backend.name for backend in BACKENDS.values() if self._backend_is_configured(backend)]
         if preferred and preferred in supported and preferred not in [item.name for item in configured]:
             required = ", ".join(BACKENDS[preferred].required_envs)
             warnings.append(
                 f"Preferred provider '{preferred}' is not configured. Required environment variables: {required}."
+            )
+        ollama_status = self._ollama_status()
+        if preferred == "ollama" and not ollama_status.reachable:
+            warnings.append(ollama_status.error or "Ollama is selected, but the local runtime is not reachable.")
+        elif preferred == "ollama" and not ollama_status.selected_model:
+            warnings.append(
+                f"Ollama is reachable but no coding-capable model is installed yet. Recommended model: {ollama_status.recommended_model}."
             )
 
         if not configured:
@@ -303,10 +340,15 @@ class LiteLLMProvider(LLMProvider):
             )
 
         hints = [
-            "Use VIKI_PROVIDER to pin the preferred backend when multiple providers are configured.",
+            "Use VIKI_PROVIDER to pin the preferred backend. Fallbacks stay off by default so the selected provider is the active runtime.",
             "Use VIKI_REASONING_MODEL, VIKI_CODING_MODEL, and VIKI_FAST_MODEL to override the role models across providers.",
             "Use --plain for CI/log-safe output and --force-rich when you want themed transcripts in captured sessions.",
         ]
+        if ollama_status.cli_available:
+            if ollama_status.selected_model:
+                hints.insert(0, f"Ollama local model ready: {ollama_status.selected_model}.")
+            elif ollama_status.reachable:
+                hints.insert(0, f"Ollama is reachable but needs a coding model. Recommended local pull: {ollama_status.recommended_model}.")
         if "nvidia" in configured_names:
             hints.insert(
                 1,
@@ -317,7 +359,7 @@ class LiteLLMProvider(LLMProvider):
             "preferred_provider": preferred,
             "selected_provider": configured_names[0] if configured_names else None,
             "fallback_chain": configured_names,
-            "configured_backends": configured_names,
+            "configured_backends": all_configured,
             "model_slots": self.model_slots(),
             "warnings": warnings,
             "hints": hints,
@@ -328,14 +370,51 @@ class LiteLLMProvider(LLMProvider):
         configured = [backend for backend in BACKENDS.values() if self._backend_is_configured(backend)]
         preferred = self.preferred_provider()
         if preferred:
-            configured.sort(key=lambda item: 0 if item.name == preferred else 1)
+            selected = [item for item in configured if item.name == preferred]
+            if not selected:
+                return configured if self._provider_allow_fallbacks() else []
+            if not self._provider_allow_fallbacks():
+                return selected
+            remainder = [item for item in configured if item.name != preferred]
+            return selected + remainder
+        configured.sort(key=lambda item: (self._auto_select_priority(item), item.name))
         return configured
+
+    def _auto_select_priority(self, backend: Backend) -> int:
+        base = os.getenv("OPENAI_API_BASE", "").strip()
+        explicit = {
+            "dashscope": bool(os.getenv("DASHSCOPE_API_KEY")),
+            "openrouter": bool(os.getenv("OPENROUTER_API_KEY")),
+            "openai-compatible": bool(
+                os.getenv("OPENAI_API_KEY")
+                and base
+                and "api.openai.com" not in base
+                and "integrate.api.nvidia.com" not in base
+            ),
+            "openai": bool(os.getenv("OPENAI_API_KEY") and (not base or "api.openai.com" in base)),
+            "nvidia": bool(os.getenv("NVIDIA_API_KEY")) or bool(
+                os.getenv("OPENAI_API_KEY") and "integrate.api.nvidia.com" in base
+            ),
+            "ollama": bool(os.getenv("OLLAMA_BASE_URL")),
+        }
+        if explicit.get(backend.name):
+            return 0
+        if backend.name == "ollama":
+            return 1
+        return 2
 
     def _backend_is_configured(self, backend: Backend) -> bool:
         if backend.name == "openai":
             key = os.getenv("OPENAI_API_KEY")
             base = os.getenv("OPENAI_API_BASE")
             return bool(key and (not base or "api.openai.com" in base))
+        if backend.name == "ollama":
+            status = self._ollama_status()
+            base = os.getenv("OLLAMA_BASE_URL") or str(getattr(settings, "ollama_base_url", "") or "").strip() or DEFAULT_OLLAMA_BASE_URL
+            explicit_model = self._preferred_ollama_model_name()
+            if explicit_model and base and not status.cli_available:
+                return True
+            return bool(status.reachable and (status.selected_model or explicit_model))
         if backend.name == "nvidia":
             key = os.getenv("NVIDIA_API_KEY") or os.getenv("OPENAI_API_KEY")
             base = os.getenv("NVIDIA_API_BASE") or os.getenv("OPENAI_API_BASE") or backend.base_default
@@ -347,6 +426,12 @@ class LiteLLMProvider(LLMProvider):
         return all(os.getenv(env_name) for env_name in backend.required_envs)
 
     def _backend_base(self, backend: Backend) -> Optional[str]:
+        if backend.name == "ollama":
+            configured = os.getenv("OLLAMA_BASE_URL") or str(getattr(settings, "ollama_base_url", "") or "").strip()
+            if configured:
+                return configured
+            status = self._ollama_status()
+            return status.base_url or DEFAULT_OLLAMA_BASE_URL
         if backend.name == "nvidia":
             return os.getenv("NVIDIA_API_BASE") or os.getenv("OPENAI_API_BASE") or backend.base_default
         if backend.base_env:
@@ -378,8 +463,12 @@ class LiteLLMProvider(LLMProvider):
             azure_model = os.getenv("AZURE_MODEL", "").strip()
             return azure_model or backend.defaults[ROLE_NAMES.index(role_name)]
         if backend.name == "ollama":
-            ollama_model = os.getenv("OLLAMA_MODEL", "").strip()
-            return ollama_model or backend.defaults[ROLE_NAMES.index(role_name)]
+            ollama_model = os.getenv("OLLAMA_MODEL", "").strip() or str(getattr(settings, "ollama_model", "") or "").strip()
+            if ollama_model:
+                return self._normalize_ollama_model(ollama_model)
+            status = self._ollama_status()
+            selected = status.selected_model or status.recommended_model
+            return self._normalize_ollama_model(selected)
         return backend.defaults[ROLE_NAMES.index(role_name)]
 
     def _explicit_model_candidates(self, model: str) -> List[ResolvedCandidate]:
@@ -405,6 +494,8 @@ class LiteLLMProvider(LLMProvider):
             candidates.append(ResolvedCandidate(backend=backend.name, model=resolved, kwargs=self._candidate_kwargs(backend)))
 
         if not candidates:
+            if self.preferred_provider() and not self._provider_allow_fallbacks():
+                return []
             fallback_model = self._global_role_override(requested) or {
                 "reasoning": settings.reasoning_model,
                 "coding": settings.coding_model,
@@ -462,7 +553,7 @@ class LiteLLMProvider(LLMProvider):
                 kwargs["api_version"] = api_version
             return kwargs
         if backend.name == "ollama":
-            return {"api_base": os.getenv("OLLAMA_BASE_URL")}
+            return {"api_base": self._backend_base(backend) or DEFAULT_OLLAMA_BASE_URL}
 
         if backend.required_envs:
             return {"api_key": os.getenv(backend.required_envs[0])}

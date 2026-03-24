@@ -308,6 +308,52 @@ class HiveMind:
             item["target_files"] = merged
         return item
 
+    def _selected_provider_name(self) -> str | None:
+        diagnostics = getattr(self.provider, "diagnostics", None)
+        if not callable(diagnostics):
+            return None
+        try:
+            payload = diagnostics()
+        except Exception:
+            return None
+        selected = str(payload.get("selected_provider") or "").strip().lower()
+        if selected:
+            return selected
+        preferred = str(payload.get("preferred_provider") or "").strip().lower()
+        return preferred or None
+
+    def _is_local_model_path(self) -> bool:
+        return self._selected_provider_name() == "ollama"
+
+    def _normalize_user_request(self, user_request: str) -> str:
+        request = (user_request or "").strip()
+        lowered = request.lower()
+        guidance: list[str] = []
+        if any(token in lowered for token in ["fix", "bug", "broken", "make the tests pass", "repair"]):
+            guidance.extend(
+                [
+                    "Use repo context to localize the most likely broken implementation files before editing.",
+                    "Make the smallest safe fix first, then run the most relevant focused tests before finishing.",
+                ]
+            )
+        if any(token in lowered for token in ["rename", "refactor", "migrate", "update callers", "roll out"]):
+            guidance.extend(
+                [
+                    "Keep the behavior stable while updating all obvious callers and public entry points consistently.",
+                    "Prefer focused validation over broad test noise unless the repo context suggests a wider blast radius.",
+                ]
+            )
+        if any(token in lowered for token in ["summarize", "inspect", "review", "analyze", "understand"]):
+            guidance.append("Prefer analysis over edits unless the user explicitly requested code changes.")
+        if any(token in lowered for token in ["continue the last task", "continue last task", "continue the last session", "resume the last task"]):
+            guidance.append("Look for the most recent session context and continue from that state instead of starting from scratch.")
+        if self._is_local_model_path():
+            guidance.append("The active model is local-first, so keep task decomposition tight, rely on repo signals heavily, and validate every concrete change.")
+        if not guidance:
+            return request
+        bullet_list = "\n".join(f"- {item}" for item in dict.fromkeys(guidance))
+        return f"{request}\n\nExecution guidance for VIKI:\n{bullet_list}"
+
     def _normalize_planned_tasks(self, tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         normalized: List[Dict[str, Any]] = []
         for task in tasks:
@@ -1127,10 +1173,12 @@ Schema requirements:
         neighbors = repo_context.get("impact", {}).get("neighbors", []) or []
         if route.lane == "repair":
             if len(non_test_targets) <= 1 and len(neighbors) <= 2:
-                return 1
-            return 2 if len(non_test_targets) <= 2 and len(neighbors) <= 3 else 3
+                return 2 if self._is_local_model_path() else 1
+            base = 2 if len(non_test_targets) <= 2 and len(neighbors) <= 3 else 3
+            return min(3, base + (1 if self._is_local_model_path() and base < 3 else 0))
         if route.lane == "refactor":
-            return 1 if len(non_test_targets) <= 2 and len(neighbors) <= 3 else 2
+            base = 1 if len(non_test_targets) <= 2 and len(neighbors) <= 3 else 2
+            return min(3, base + (1 if self._is_local_model_path() and base < 2 else 0))
         if route.cost_tier == "high-confidence":
             return 1 if len(non_test_targets) <= 2 else 2
         if len(task.get("target_files", []) or []) >= 5:
@@ -1450,13 +1498,15 @@ Schema requirements:
     async def process_request(self, user_request: str, mode: str = "standard") -> Dict[str, Any]:
         await self.rate_limiter.acquire()
         branch_name = f"viki-{self.session_id}"
+        normalized_request = self._normalize_user_request(user_request)
         recent_memories = await self.memory.recall(limit=12)
         recent_failures = await self.db.recent_command_failures(limit=8)
         repo_profile = self.repo_index.profile()
-        repo_focus = self.repo_index.focus(user_request, limit=40)
+        repo_focus = self.repo_index.focus(normalized_request, limit=40)
         repo_instructions = self.repo_index.instructions(limit=4)
         base_context = {
-            "request": user_request,
+            "request": normalized_request,
+            "original_request": user_request,
             "mode": mode,
             "workspace": str(self.workspace),
             "available_skills": [record.name for record in self.registry.list_skills()],
@@ -1476,7 +1526,7 @@ Schema requirements:
 
         plan_swarm = SwarmPod(
             SwarmType.PLANNING,
-            f"Plan execution for: {user_request}",
+            f"Plan execution for: {normalized_request}",
             self.provider,
             self.db,
             self.metrics,
@@ -1491,7 +1541,7 @@ Schema requirements:
             {
                 "id": "task-1",
                 "title": user_request,
-                "objective": user_request,
+                "objective": normalized_request,
                 "target_files": [],
                 "deliverables": [],
                 "commands": plan.get("testing_commands", []),
@@ -1499,11 +1549,11 @@ Schema requirements:
             }
         ]
         tasks = self._normalize_planned_tasks(tasks)
-        tasks = [self._augment_task_targets(task, user_request) for task in tasks]
+        tasks = [self._augment_task_targets(task, normalized_request) for task in tasks]
         tasks = await self._expand_tasks(tasks, context)
-        tasks = [self._augment_task_targets(task, user_request) for task in tasks]
+        tasks = [self._augment_task_targets(task, normalized_request) for task in tasks]
         tasks = self._merge_validation_tasks(tasks)
-        routes = self.router.route_tasks(user_request, tasks, context)
+        routes = self.router.route_tasks(normalized_request, tasks, context)
         task_results = await self._execute_tasks(tasks, routes, context)
 
         changed_files = sorted({path for item in task_results for path in item["changed_files"]})
@@ -1515,7 +1565,7 @@ Schema requirements:
         coding_results = [item["result"] for item in task_results]
         merged_operations = self.merge_resolver.combine_operations([item["result"].get("file_operations", []) for item in task_results])
 
-        testing_plan = self._synthesize_testing_plan(user_request, changed_files, routes, task_results, command_results)
+        testing_plan = self._synthesize_testing_plan(normalized_request, changed_files, routes, task_results, command_results)
         if testing_plan.get("_swarm"):
             testing_swarm = testing_plan.pop("_swarm")
             testing_plan = await testing_swarm.run_structured(
@@ -1531,7 +1581,7 @@ Schema requirements:
         command_results.extend(testing_results)
         pending_approvals.extend(testing_approvals)
 
-        security_plan = self._synthesize_security_plan(user_request, changed_files, routes, task_results, command_results)
+        security_plan = self._synthesize_security_plan(normalized_request, changed_files, routes, task_results, command_results)
         if security_plan.get("_swarm"):
             security_swarm = security_plan.pop("_swarm")
             security_plan = await security_swarm.run_structured(self.session_id, {**context, "changed_files": changed_files}, SECURITY_SCHEMA)
@@ -1558,6 +1608,7 @@ Schema requirements:
             "session_summary",
             {
                 "request": user_request,
+                "normalized_request": normalized_request,
                 "status": "completed" if secure else "completed_with_security_findings",
                 "changed_files": changed_files,
             "repo_profile": repo_profile,
@@ -1571,6 +1622,7 @@ Schema requirements:
             "session_id": self.session_id,
             "status": "completed" if secure else "completed_with_security_findings",
             "request": user_request,
+            "normalized_request": normalized_request,
             "branch": branch_name,
             "plan": plan,
             "tasks": tasks,

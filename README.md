@@ -19,7 +19,7 @@
 
 VIKI Code is governed coding infrastructure for teams that want an AI system to operate inside real repositories, under approvals, with rollback paths, live validation, and evidence-backed execution.
 
-It is built for serious engineering workflows: bug-fixes, refactors, migrations, repo intelligence, local API control, IDE handoff, and chat-driven approvals across the same governed execution core.
+It is built for serious engineering workflows: bug-fixes, refactors, migrations, repo intelligence, local API control, IDE handoff, and chat-driven approvals across the same governed execution core. The current product flow is local-first, prompt-first, and designed to feel stable in a normal PowerShell or terminal session without requiring users to learn internal provider syntax.
 
 <p align="center">
   <a href="https://rebootix-research.com/viki-code"><strong>Product Page</strong></a>
@@ -38,6 +38,7 @@ It is built for serious engineering workflows: bug-fixes, refactors, migrations,
 ## Why VIKI Code
 
 - Real repo execution instead of chat-only suggestions.
+- Local-first provider flow with Ollama as a first-class runtime when it is available.
 - Approval-aware autonomy with diff preview, patch export, and rollback paths.
 - Multi-agent execution designed for planning, implementation, validation, and review.
 - Repo intelligence tuned for large codebases, monorepos, and targeted test selection.
@@ -46,6 +47,7 @@ It is built for serious engineering workflows: bug-fixes, refactors, migrations,
 ## What You Can Do In Five Minutes
 
 - Install locally and launch directly into the guided VIKI setup flow.
+- Use Ollama locally if it is installed, or choose another provider preset without learning LiteLLM routing syntax.
 - Pick a provider preset, reuse a shell API key if one is already present, and save a user-level config outside the repo.
 - Let VIKI initialize the current repository safely, then ask for a real bug-fix, refactor, or repo summary in the same terminal session.
 - Carry the same session model across CLI, API, IDE, and approval workflows.
@@ -54,13 +56,14 @@ It is built for serious engineering workflows: bug-fixes, refactors, migrations,
 
 | Signal | Current 4.1.4 evidence |
 | --- | --- |
-| Local regression suite | `90 passed` |
+| Local regression suite | `99 passed` |
 | Live validation suite | `9/9 passed` on fresh repos |
 | Generic CLI live wins | `7/7 passed` |
 | Public live benchmark slice | `8/8 passed` |
 | Public offline benchmark slice | `8/8 passed` |
 | Human-style install validation | passed |
 | Isolation validation | passed through real WSL-isolated execution |
+| Local-first Ollama execution | passed locally on `qwen2.5-coder:7b` |
 
 The project is public-release ready for its niche. It is not positioned here as fastest-in-class or benchmark leader overall, because the current proof still shows that live time-to-green is slower than the bundled baselines.
 
@@ -112,7 +115,7 @@ After install, launch the product entrypoint:
 viki
 ```
 
-VIKI now opens with a guided first-run experience. If setup is incomplete, it launches the setup wizard automatically. If setup is already complete, it drops you into a prompt-first console.
+VIKI now opens with a guided first-run experience. If setup is incomplete, it launches the setup wizard automatically. If setup is already complete, it drops you into a prompt-first console. If Ollama is installed and reachable, VIKI treats it as the preferred local-first runtime and will guide you toward the strongest practical local coding model it can detect.
 
 Start VIKI immediately after install:
 
@@ -177,6 +180,7 @@ viki setup --repair
 
 The guided setup flow is the primary path for normal users. It hides provider prefix syntax and offers provider presets instead:
 
+- Ollama
 - DashScope / Qwen
 - OpenAI
 - OpenRouter
@@ -184,11 +188,20 @@ The guided setup flow is the primary path for normal users. It hides provider pr
 - Azure OpenAI
 - NVIDIA with a first-class Kimi 2.5 preset over the OpenAI-compatible transport
 - Generic OpenAI-compatible endpoints
-- Ollama
 
-The wizard asks for the minimum needed values, lets you reuse an API key that is already present in your shell, offers a sensible model profile, and saves the resulting config to a user-level file outside the repository.
+The wizard asks for the minimum needed values, lets you reuse an API key that is already present in your shell, offers a sensible model profile, and saves the resulting config to a user-level file outside the repository. Provider selection is isolated by default, so the provider you choose becomes the active runtime instead of silently inheriting stale cloud fallbacks from previous runs.
+
+For Ollama users, VIKI:
+
+- detects whether Ollama is installed and reachable
+- detects installed local models
+- picks the strongest practical coding-capable local model automatically
+- offers to pull the recommended local model when the runtime is reachable but no coding model is installed yet
+- shows the actual active local model in `viki providers`, `viki doctor`, and the home screen
 
 For NVIDIA users, the wizard keeps the transport details out of the normal path: choose the `NVIDIA` preset, pick `Kimi 2.5`, paste the key, accept the default base URL, and start prompting.
+
+On Windows PowerShell, VIKI now uses a safer secret-input path during setup. Optional Telegram or WhatsApp setup is clearly marked as optional and cannot corrupt the provider flow if you skip it.
 
 Optional setup in the same flow:
 
@@ -201,10 +214,10 @@ Optional setup in the same flow:
 Advanced env-based setup is still available for operators who prefer it:
 
 ```bash
-export VIKI_PROVIDER=dashscope
-export DASHSCOPE_API_KEY=...
-export DASHSCOPE_API_BASE=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-export VIKI_CODING_MODEL=openai/qwen3-coder-next
+export VIKI_PROVIDER=ollama
+export VIKI_PROVIDER_ALLOW_FALLBACKS=false
+export OLLAMA_BASE_URL=http://127.0.0.1:11434
+export OLLAMA_MODEL=qwen2.5-coder:7b
 viki providers
 viki doctor .
 ```
@@ -212,10 +225,10 @@ viki doctor .
 PowerShell example:
 
 ```powershell
-$env:VIKI_PROVIDER = "dashscope"
-$env:DASHSCOPE_API_KEY = "<temporary key>"
-$env:DASHSCOPE_API_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-$env:VIKI_CODING_MODEL = "openai/qwen3-coder-next"
+$env:VIKI_PROVIDER = "ollama"
+$env:VIKI_PROVIDER_ALLOW_FALLBACKS = "false"
+$env:OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+$env:OLLAMA_MODEL = "qwen2.5-coder:7b"
 viki providers
 viki doctor .
 ```
@@ -248,6 +261,7 @@ viki workspaces list
 viki workspaces use /path/to/repo
 viki sessions list .
 viki sessions continue <session_id> --path .
+viki providers
 ```
 
 Explicit task commands still work:
@@ -297,6 +311,22 @@ viki --theme premium diff <session_id> --path . --rendered
 ```
 
 The themed layer is designed for PowerShell, macOS Terminal, Linux shells, and modern Windows terminals without requiring shell-specific setup.
+
+## Natural-Language Usage
+
+You do not need rigid internal command phrasing to get useful work out of VIKI. The default shell is designed to accept normal human requests such as:
+
+```text
+fix this bug
+make the tests pass
+rename this helper everywhere
+summarize this repo
+continue the last task
+show the last diff
+set this up for me
+```
+
+When the request is actionable, VIKI uses repo context, recent session state, likely target files, and focused validation hints to shape the execution plan without forcing you to specify file paths up front.
 
 ## CLI
 
@@ -421,6 +451,43 @@ The current 4.1.4 evidence shows a credible, live-tested system:
 - real WSL-isolated live execution passed
 
 The honest limitation is speed: VIKI currently trails the bundled baselines on time-to-green even where it completes the task successfully.
+
+## Troubleshooting
+
+### PowerShell setup input feels fragile
+
+VIKI now uses a PowerShell-safe secure prompt path for secrets when it can. If the terminal cannot support hidden entry cleanly, VIKI falls back to a safer visible single-line prompt and never prints the value back in setup summaries.
+
+### Ollama is installed but VIKI says no model is ready
+
+Run:
+
+```bash
+ollama list
+ollama pull qwen2.5-coder:7b
+viki providers
+viki doctor .
+```
+
+If `ollama list` works, VIKI should detect the local runtime and show the selected local model clearly.
+
+### The wrong provider is being selected
+
+Pin the provider explicitly:
+
+```bash
+export VIKI_PROVIDER=ollama
+export VIKI_PROVIDER_ALLOW_FALLBACKS=false
+```
+
+Then run:
+
+```bash
+viki providers
+viki doctor .
+```
+
+The selected provider and fallback chain should reflect the active runtime directly.
 
 ## Project Structure
 

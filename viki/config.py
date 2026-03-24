@@ -101,6 +101,7 @@ class Settings(BaseSettings):
         )
 
     viki_provider: Optional[str] = Field(default=None, alias="VIKI_PROVIDER")
+    viki_provider_allow_fallbacks: bool = Field(default=False, alias="VIKI_PROVIDER_ALLOW_FALLBACKS")
     viki_theme: str = Field(default="premium", alias="VIKI_THEME")
     default_run_mode: str = Field(default="standard", alias="VIKI_DEFAULT_RUN_MODE")
     openrouter_api_key: Optional[str] = None
@@ -125,11 +126,12 @@ class Settings(BaseSettings):
     dashscope_api_base: str = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     openrouter_api_base: str = "https://openrouter.ai/api/v1"
     ollama_base_url: Optional[str] = None
+    ollama_model: Optional[str] = None
 
     reasoning_model: str = "reasoning"
     coding_model: str = "coding"
     quick_model: str = "fast"
-    local_model: str = "ollama/llama3.1"
+    local_model: str = "ollama/qwen2.5-coder:7b"
 
     max_cost_per_task_usd: float = 10.0
     max_tokens_per_task: int = 120000

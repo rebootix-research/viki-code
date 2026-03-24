@@ -15,16 +15,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from viki.infrastructure.security import SecurityScanner
+from viki.ollama_support import DEFAULT_OLLAMA_BASE_URL, get_ollama_runtime_status
 from viki.platforms import PlatformSupport
 
 PROVIDER_ENV_PRIORITY = [
+    ("ollama", ["OLLAMA_BASE_URL"], ["OLLAMA_BASE_URL", "OLLAMA_MODEL", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
     ("dashscope", ["DASHSCOPE_API_KEY"], ["DASHSCOPE_API_KEY", "DASHSCOPE_API_BASE", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
     ("openrouter", ["OPENROUTER_API_KEY"], ["OPENROUTER_API_KEY", "OPENROUTER_API_BASE", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
     ("openai-compatible", ["OPENAI_API_KEY", "OPENAI_API_BASE"], ["OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_COMPAT_MODEL", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
     ("openai", ["OPENAI_API_KEY"], ["OPENAI_API_KEY", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
     ("anthropic", ["ANTHROPIC_API_KEY"], ["ANTHROPIC_API_KEY", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
     ("nvidia", ["NVIDIA_API_KEY"], ["NVIDIA_API_KEY", "NVIDIA_API_BASE", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
-    ("ollama", ["OLLAMA_BASE_URL"], ["OLLAMA_BASE_URL", "OLLAMA_MODEL", "VIKI_PROVIDER", "VIKI_REASONING_MODEL", "VIKI_CODING_MODEL", "VIKI_FAST_MODEL"]),
 ]
 KNOWN_PROVIDER_SECRET_KEYS = {
     "DASHSCOPE_API_KEY",
@@ -36,6 +37,14 @@ KNOWN_PROVIDER_SECRET_KEYS = {
 
 
 def detect_live_provider(env: dict[str, str]) -> dict[str, object]:
+    ollama_status = get_ollama_runtime_status(allow_pull=False)
+    if ollama_status.cli_available and ollama_status.reachable:
+        selected_model = ollama_status.selected_model or ollama_status.recommended_model
+        return {
+            "provider": "ollama",
+            "forwarded_keys": ["OLLAMA_BASE_URL", "OLLAMA_MODEL"],
+            "ollama_model": selected_model,
+        }
     preferred = (env.get("VIKI_PROVIDER") or "").strip().lower()
     if preferred:
         for name, required, keys in PROVIDER_ENV_PRIORITY:
@@ -55,10 +64,15 @@ def isolate_provider_env(env: dict[str, str], detected: dict[str, object]) -> di
             isolated.pop(key, None)
     if detected.get("provider"):
         isolated["VIKI_PROVIDER"] = str(detected["provider"])
+    isolated["VIKI_PROVIDER_ALLOW_FALLBACKS"] = "false"
     if detected.get("provider") == "dashscope":
         isolated.setdefault("DASHSCOPE_API_BASE", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
     if detected.get("provider") == "openrouter":
         isolated.setdefault("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
+    if detected.get("provider") == "ollama":
+        isolated["OLLAMA_BASE_URL"] = str(env.get("OLLAMA_BASE_URL") or DEFAULT_OLLAMA_BASE_URL)
+        if detected.get("ollama_model"):
+            isolated["OLLAMA_MODEL"] = str(detected["ollama_model"])
     return isolated
 
 
@@ -74,6 +88,13 @@ def setup_wizard_input(provider_slug: str) -> str:
         "ollama": 8,
     }
     provider_index = provider_index_map.get(provider_slug, 1)
+    if provider_slug == "ollama":
+        status = get_ollama_runtime_status(allow_pull=False)
+        if status.cli_available and status.reachable and not status.selected_model:
+            return f"{provider_index}\n1\n\ny\n1\n1\n1\nn\nn\n"
+        if status.cli_available and status.reachable:
+            return f"{provider_index}\n1\n\n1\n1\n1\nn\nn\n"
+        return f"{provider_index}\n1\n\n{status.recommended_model}\n1\n1\n1\nn\nn\n"
     return f"{provider_index}\n1\ny\n\n1\n1\n1\nn\nn\n"
 
 
@@ -173,6 +194,28 @@ def secret_match_count(root: Path, env: dict[str, str], forwarded_keys: list[str
     return count
 
 
+def read_config_summary(config_home: Path) -> dict[str, object]:
+    config_path = config_home / "config.env"
+    if not config_path.exists():
+        return {"exists": False}
+    payload: dict[str, str] = {}
+    for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        payload[key.strip()] = value.strip().strip("\"'")
+    return {
+        "exists": True,
+        "provider": payload.get("VIKI_PROVIDER"),
+        "allow_fallbacks": payload.get("VIKI_PROVIDER_ALLOW_FALLBACKS"),
+        "ollama_model": payload.get("OLLAMA_MODEL"),
+        "has_dashscope_key": "DASHSCOPE_API_KEY" in payload,
+        "has_openai_key": "OPENAI_API_KEY" in payload,
+        "has_nvidia_key": "NVIDIA_API_KEY" in payload,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate the connected VIKI product flow from a fresh GitHub clone.")
     parser.add_argument("--repo-url", default="https://github.com/rebootix-research/viki-code.git")
@@ -270,7 +313,7 @@ def main() -> None:
     assert live_refactor is not None
     assert refactor_pytest is not None
     home_shell_output = str(commands[10]["stdout"])
-    config_saved = config_home.joinpath("config.env").exists()
+    config_summary = read_config_summary(config_home)
     remove_tree(config_home)
 
     calculator_text = (bugfix_repo / "app" / "calculator.py").read_text(encoding="utf-8")
@@ -288,7 +331,16 @@ def main() -> None:
         "version_ok": commands[2]["returncode"] == 0,
         "github_status_ok": commands[3]["returncode"] == 0 and "Connected" in str(commands[3]["stdout"]),
         "github_repos_ok": commands[4]["returncode"] == 0 and "Repository" in str(commands[4]["stdout"]),
-        "setup_ok": commands[5]["returncode"] == 0 and config_saved,
+        "setup_ok": commands[5]["returncode"] == 0 and bool(config_summary.get("exists")),
+        "setup_provider_ok": config_summary.get("provider") == detected["provider"],
+        "setup_fallbacks_disabled": config_summary.get("allow_fallbacks") == "false",
+        "setup_stale_provider_state_cleared": not any(
+            [
+                config_summary.get("has_dashscope_key"),
+                config_summary.get("has_openai_key"),
+                config_summary.get("has_nvidia_key"),
+            ]
+        ) if detected["provider"] == "ollama" else True,
         "doctor_ok": commands[6]["returncode"] == 0,
         "workspace_switch_ok": commands[7]["returncode"] == 0,
         "workspace_list_ok": commands[8]["returncode"] == 0 and "Recent Workspaces" in str(commands[8]["stdout"]),
@@ -303,6 +355,7 @@ def main() -> None:
         "live_refactor_error": refactor_error,
         "live_provider_blocked": bool(bugfix_error or refactor_error),
         "config_home_removed": not config_home.exists(),
+        "config_summary": config_summary,
     }
     summary["secret_matches"] = secret_match_count(output, env, list(detected["forwarded_keys"]))
 

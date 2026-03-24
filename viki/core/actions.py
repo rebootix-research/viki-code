@@ -165,6 +165,11 @@ class WorkspaceExecutor:
                     cwd=str(cwd),
                     error=str(exc),
                 )
+                if hasattr(self.sandbox, "client"):
+                    try:
+                        self.sandbox.client = None
+                    except Exception:
+                        pass
             else:
                 return {
                     "returncode": result.get("returncode", 1),

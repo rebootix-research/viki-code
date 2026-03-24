@@ -5,6 +5,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from viki.cli import app
+from viki.ollama_support import OllamaRuntimeStatus
 
 
 runner = CliRunner()
@@ -100,6 +101,7 @@ def test_default_entry_runs_guided_setup_and_initializes_workspace(tmp_path: Pat
     assert (workspace / ".viki-workspace").exists()
     assert "Prompt-First Console" in result.output
     assert "No task entered" in result.output
+    assert "Live Session" not in result.output
 
 
 def test_default_entry_uses_existing_setup_and_skips_wizard(tmp_path: Path, monkeypatch):
@@ -131,3 +133,54 @@ def test_default_entry_uses_existing_setup_and_skips_wizard(tmp_path: Path, monk
     assert result.exit_code == 0, result.output
     assert "guided you through provider" not in result.output.lower()
     assert "Prompt-First Console" in result.output
+
+
+def test_setup_wizard_switches_to_ollama_and_clears_stale_provider_and_messaging_state(tmp_path: Path, monkeypatch):
+    config_home = tmp_path / "config-home"
+    config_home.mkdir(parents=True)
+    (config_home / "config.env").write_text(
+        "\n".join(
+            [
+                "VIKI_PROVIDER=dashscope",
+                "DASHSCOPE_API_KEY=stale-key",
+                "DASHSCOPE_API_BASE=https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                "OPENAI_API_KEY=stale-openai",
+                "TELEGRAM_ENABLED=true",
+                "TELEGRAM_BOT_TOKEN=stale-telegram",
+                "WHATSAPP_ENABLED=true",
+                "WHATSAPP_AUTH_TOKEN=stale-whatsapp",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        "viki.cli.get_ollama_runtime_status",
+        lambda allow_pull=False, preferred_model=None: OllamaRuntimeStatus(
+            cli_available=True,
+            reachable=True,
+            base_url="http://127.0.0.1:11434",
+            models=("qwen2.5-coder:7b",),
+            selected_model="qwen2.5-coder:7b",
+            recommended_model="qwen2.5-coder:7b",
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        ["setup", str(workspace), "--repair"],
+        env={"VIKI_CONFIG_HOME": str(config_home)},
+        input="8\n1\n\n1\n1\n1\nn\nn\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    content = (config_home / "config.env").read_text(encoding="utf-8")
+    assert "VIKI_PROVIDER=ollama" in content
+    assert "VIKI_PROVIDER_ALLOW_FALLBACKS=false" in content
+    assert "OLLAMA_MODEL=qwen2.5-coder:7b" in content
+    assert "DASHSCOPE_API_KEY" not in content
+    assert "OPENAI_API_KEY" not in content
+    assert "TELEGRAM_BOT_TOKEN" not in content
+    assert "WHATSAPP_AUTH_TOKEN" not in content

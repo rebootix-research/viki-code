@@ -1058,3 +1058,14 @@ def test_scripted_provider_rollout_updates_cli_and_docs():
     changed_paths = {item["path"] for item in payload["file_operations"]}
     assert "apps/cli/commands.py" in changed_paths
     assert "docs/auth.md" in changed_paths
+
+
+def test_natural_language_request_normalization_adds_local_execution_guidance(tmp_path: Path, monkeypatch):
+    hive = HiveMind(ScriptedEvalProvider(), tmp_path)
+    monkeypatch.setattr(hive, "_selected_provider_name", lambda: "ollama")
+
+    normalized = hive._normalize_user_request("fix this bug and make the tests pass")
+
+    assert "Execution guidance for VIKI" in normalized
+    assert "smallest safe fix" in normalized
+    assert "active model is local-first" in normalized

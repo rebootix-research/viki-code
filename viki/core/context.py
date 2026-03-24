@@ -77,6 +77,10 @@ class ContextCompressor:
             intent = "repair"
         elif any(word in lowered for word in ["refactor", "migrate", "rename"]):
             intent = "structural-change"
+        elif any(word in lowered for word in ["summarize", "inspect", "review", "analyze", "understand"]):
+            intent = "analysis"
+        elif any(word in lowered for word in ["continue", "resume", "pick up where we left off"]):
+            intent = "continuation"
         elif any(word in lowered for word in ["test", "coverage", "ci"]):
             intent = "testing"
         return {

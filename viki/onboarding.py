@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .config import read_user_config, settings, user_config_path
+from .ollama_support import DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_PULL_MODEL, get_ollama_runtime_status
 
 
 @dataclass(frozen=True)
@@ -114,10 +115,74 @@ MODEL_PROFILES = {
             slug="local-default",
             label="Local Ollama default",
             summary="Local-only profile using the configured Ollama model.",
-            reasoning="ollama/llama3.1",
-            coding="ollama/llama3.1",
-            fast="ollama/llama3.1",
+            reasoning=f"ollama/{DEFAULT_OLLAMA_PULL_MODEL}",
+            coding=f"ollama/{DEFAULT_OLLAMA_PULL_MODEL}",
+            fast=f"ollama/{DEFAULT_OLLAMA_PULL_MODEL}",
         ),
+    ),
+}
+
+
+ALL_PROVIDER_CONFIG_KEYS: tuple[str, ...] = (
+    "VIKI_PROVIDER",
+    "VIKI_PROVIDER_ALLOW_FALLBACKS",
+    "VIKI_REASONING_MODEL",
+    "VIKI_CODING_MODEL",
+    "VIKI_FAST_MODEL",
+    "DASHSCOPE_API_KEY",
+    "DASHSCOPE_API_BASE",
+    "OPENAI_API_KEY",
+    "OPENAI_API_BASE",
+    "OPENAI_COMPAT_MODEL",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_API_BASE",
+    "ANTHROPIC_API_KEY",
+    "AZURE_API_KEY",
+    "AZURE_API_BASE",
+    "AZURE_API_VERSION",
+    "GOOGLE_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GROQ_API_KEY",
+    "MISTRAL_API_KEY",
+    "TOGETHERAI_API_KEY",
+    "FIREWORKS_API_KEY",
+    "XAI_API_KEY",
+    "CEREBRAS_API_KEY",
+    "SAMBANOVA_API_KEY",
+    "NVIDIA_API_KEY",
+    "NVIDIA_API_BASE",
+    "NVIDIA_MODEL",
+    "OLLAMA_BASE_URL",
+    "OLLAMA_MODEL",
+)
+
+MESSAGING_CONFIG_KEYS: tuple[str, ...] = (
+    "TELEGRAM_ENABLED",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_WEBHOOK_SECRET",
+    "TELEGRAM_ALLOWED_CHAT_IDS",
+    "WHATSAPP_ENABLED",
+    "WHATSAPP_ACCOUNT_SID",
+    "WHATSAPP_AUTH_TOKEN",
+    "WHATSAPP_FROM_NUMBER",
+    "WHATSAPP_ALLOWED_SENDERS",
+    "WHATSAPP_WEBHOOK_URL",
+)
+
+MESSAGING_KEYS_BY_CHANNEL: dict[str, tuple[str, ...]] = {
+    "telegram": (
+        "TELEGRAM_ENABLED",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_WEBHOOK_SECRET",
+        "TELEGRAM_ALLOWED_CHAT_IDS",
+    ),
+    "whatsapp": (
+        "WHATSAPP_ENABLED",
+        "WHATSAPP_ACCOUNT_SID",
+        "WHATSAPP_AUTH_TOKEN",
+        "WHATSAPP_FROM_NUMBER",
+        "WHATSAPP_ALLOWED_SENDERS",
+        "WHATSAPP_WEBHOOK_URL",
     ),
 }
 
@@ -196,20 +261,62 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         provider_value="ollama",
         secret_env=None,
         base_env="OLLAMA_BASE_URL",
-        base_default="http://127.0.0.1:11434",
+        base_default=DEFAULT_OLLAMA_BASE_URL,
         model_profiles=MODEL_PROFILES["ollama"],
         notes="Ollama does not need an API key, but it does need a reachable local endpoint.",
     ),
 )
 
 
+def _dynamic_ollama_preset(base: ProviderPreset) -> ProviderPreset:
+    status = get_ollama_runtime_status(allow_pull=False)
+    model_name = status.selected_model or status.recommended_model
+    profile = ModelProfile(
+        slug="local-default",
+        label=f"Local model: {model_name}",
+        summary=(
+            "Use the strongest detected local coding model."
+            if status.selected_model
+            else f"No suitable model is installed yet. VIKI will guide you toward {status.recommended_model}."
+        ),
+        reasoning=f"ollama/{model_name}",
+        coding=f"ollama/{model_name}",
+        fast=f"ollama/{model_name}",
+    )
+    notes = base.notes
+    if status.error:
+        notes = f"{base.notes} Current runtime status: {status.error}"
+    elif status.selected_model:
+        notes = f"{base.notes} Detected local coding model: {status.selected_model}."
+    else:
+        notes = f"{base.notes} Recommended local coding model: {status.recommended_model}."
+    return ProviderPreset(
+        slug=base.slug,
+        label=base.label,
+        description=base.description,
+        provider_value=base.provider_value,
+        secret_env=base.secret_env,
+        base_env=base.base_env,
+        base_default=status.base_url or base.base_default,
+        model_profiles=(profile,),
+        notes=notes,
+    )
+
+
+def _resolved_preset(preset: ProviderPreset) -> ProviderPreset:
+    if preset.slug == "ollama":
+        return _dynamic_ollama_preset(preset)
+    return preset
+
+
 def iter_provider_presets() -> Iterable[ProviderPreset]:
-    return PROVIDER_PRESETS
+    for preset in PROVIDER_PRESETS:
+        yield _resolved_preset(preset)
 
 
 def get_provider_preset(slug: str) -> ProviderPreset:
     normalized = slug.strip().lower()
-    for preset in PROVIDER_PRESETS:
+    for preset in iter_provider_presets():
         if preset.slug == normalized or preset.provider_value == normalized:
             return preset
     raise KeyError(slug)
@@ -230,6 +337,7 @@ def get_model_profile(preset: ProviderPreset, slug: str | None = None) -> ModelP
 def build_provider_env(preset: ProviderPreset, profile: ModelProfile, *, secret_value: str | None, base_value: str | None, azure_api_version: str | None = None) -> dict[str, str]:
     env = {
         "VIKI_PROVIDER": preset.provider_value,
+        "VIKI_PROVIDER_ALLOW_FALLBACKS": "false",
         "VIKI_REASONING_MODEL": profile.reasoning,
         "VIKI_CODING_MODEL": profile.coding,
         "VIKI_FAST_MODEL": profile.fast,
@@ -249,8 +357,28 @@ def build_provider_env(preset: ProviderPreset, profile: ModelProfile, *, secret_
             env["NVIDIA_API_BASE"] = base_value
         env.setdefault("OPENAI_COMPAT_MODEL", profile.coding)
     if preset.slug == "ollama":
-        env["OLLAMA_MODEL"] = profile.coding
+        env["OLLAMA_MODEL"] = profile.coding.removeprefix("ollama/")
     return env
+
+
+def provider_reset_values() -> dict[str, None]:
+    return {key: None for key in ALL_PROVIDER_CONFIG_KEYS}
+
+
+def messaging_reset_values(*, enabled_channels: Iterable[str] = ()) -> dict[str, str | None]:
+    enabled = {item.strip().lower() for item in enabled_channels}
+    resets: dict[str, None | str] = {}
+    for channel, keys in MESSAGING_KEYS_BY_CHANNEL.items():
+        for index, key in enumerate(keys):
+            if channel in enabled:
+                if index == 0:
+                    continue
+                continue
+            if index == 0:
+                resets[key] = "false"
+            else:
+                resets[key] = None
+    return resets
 
 
 def onboarding_state(root: Path) -> dict[str, object]:

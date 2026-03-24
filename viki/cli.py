@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import getpass
 import json
 import os
 import shutil
@@ -35,7 +36,16 @@ from .infrastructure.observability import setup_logging, start_metrics_server
 from .infrastructure.security import ContainerRuntimeProbe
 from .integrations.telegram import TelegramBotClient
 from .integrations.whatsapp import TwilioWhatsAppClient
-from .onboarding import build_provider_env, get_model_profile, get_provider_preset, iter_provider_presets, onboarding_state
+from .ollama_support import DEFAULT_OLLAMA_BASE_URL, get_ollama_runtime_status
+from .onboarding import (
+    build_provider_env,
+    get_model_profile,
+    get_provider_preset,
+    iter_provider_presets,
+    messaging_reset_values,
+    onboarding_state,
+    provider_reset_values,
+)
 from .platforms import PlatformSupport
 from .providers.litellm_provider import LiteLLMProvider
 from .skills.factory import AutoSkillFactory
@@ -228,6 +238,22 @@ def _render_provider_overview(provider: Optional[LiteLLMProvider] = None) -> Non
         ui.info(hint)
 
 
+def _render_ollama_runtime_summary() -> None:
+    status = get_ollama_runtime_status(allow_pull=False)
+    table = Table(title="Ollama Runtime")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("CLI", "available" if status.cli_available else "missing")
+    table.add_row("Runtime", "reachable" if status.reachable else "unreachable")
+    table.add_row("Base URL", status.base_url)
+    table.add_row("Detected model", status.selected_model or "none")
+    table.add_row("Recommended model", status.recommended_model)
+    table.add_row("Installed models", ", ".join(status.models[:6]) or "none")
+    ui.render_table(table)
+    if status.error:
+        ui.warning(status.error)
+
+
 def _home_github_summary() -> tuple[str, list[GitHubRepo]]:
     status = detect_github_status()
     repos = list_github_repos(limit=8) if status.authenticated else []
@@ -337,7 +363,8 @@ def _render_home_screen(root: Path, provider: LiteLLMProvider) -> None:
     _render_recent_sessions_block(root)
     ui.render_hint_strip(
         [
-            "Type a task directly to start work",
+            "Type a task naturally to start work",
+            "Natural requests like 'fix this bug', 'rename this helper everywhere', or 'summarize this repo' work here",
             "Use /workspace to switch repos or reopen a recent workspace",
             "Use /github to browse and clone from the connected GitHub account",
             "Use /resume to continue a recent session",
@@ -472,9 +499,22 @@ def _prompt_choice(title: str, options: list[tuple[str, str]], *, default_index:
     return selected - 1
 
 
+def _safe_secret_prompt(label: str) -> str:
+    if os.name == "nt" and sys.stdin and sys.stdin.isatty():
+        ui.info(f"{label}: using a PowerShell-safe secure prompt.")
+        try:
+            return getpass.getpass(f"{label}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise
+        except Exception:
+            ui.warning("Secure hidden input was not available in this terminal. VIKI will accept one visible line and will not echo it back in summaries.")
+            return typer.prompt(label, hide_input=False).strip()
+    return typer.prompt(label, hide_input=True).strip()
+
+
 def _prompt_text(label: str, *, default: str | None = None, secret: bool = False, allow_empty: bool = False) -> str:
     if secret:
-        value = typer.prompt(label, hide_input=True).strip()
+        value = _safe_secret_prompt(label)
     else:
         value = typer.prompt(label, default=default or "", show_default=bool(default)).strip()
     if value:
@@ -484,6 +524,23 @@ def _prompt_text(label: str, *, default: str | None = None, secret: bool = False
     if allow_empty:
         return ""
     raise typer.BadParameter(f"{label} is required.")
+
+
+def _drain_console_input() -> None:
+    try:
+        if not sys.stdin or not sys.stdin.isatty():
+            return
+        if os.name == "nt":
+            import msvcrt
+
+            while msvcrt.kbhit():  # pragma: no branch - depends on user typing speed
+                msvcrt.getwch()
+            return
+        import termios
+
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        return
 
 
 def _existing_secret_for_preset(preset: ProviderPreset) -> str:
@@ -514,7 +571,48 @@ def _existing_base_for_preset(preset: ProviderPreset) -> str:
     return str(preset.base_default or "")
 
 
-def _setup_provider_configuration() -> tuple[dict[str, str], dict[str, str]]:
+def _choose_ollama_model_interactively(preset: ProviderPreset, profile: Any) -> tuple[Any, dict[str, str]]:
+    status = get_ollama_runtime_status(allow_pull=False)
+    updates: dict[str, str] = {}
+    if status.cli_available and status.reachable and status.selected_model:
+        return profile, updates
+
+    if status.cli_available and status.reachable:
+        ui.warning(f"Ollama is reachable, but no coding-capable local model is installed yet. Recommended model: {status.recommended_model}.")
+        if typer.confirm(f"Pull {status.recommended_model} now?", default=True):
+            pulling = get_ollama_runtime_status(allow_pull=True, preferred_model=status.recommended_model)
+            if pulling.selected_model:
+                updated_profile = get_model_profile(preset)
+                updated_profile = type(updated_profile)(
+                    slug=updated_profile.slug,
+                    label=f"Local model: {pulling.selected_model}",
+                    summary=updated_profile.summary,
+                    reasoning=f"ollama/{pulling.selected_model}",
+                    coding=f"ollama/{pulling.selected_model}",
+                    fast=f"ollama/{pulling.selected_model}",
+                )
+                return updated_profile, updates
+            ui.warning(pulling.error or "Ollama model pull did not complete.")
+    elif status.cli_available and not status.reachable:
+        ui.warning(status.error or "Ollama is installed, but the local runtime is not reachable.")
+    else:
+        ui.warning("Ollama CLI is not installed, so the local preset cannot validate the runtime here.")
+
+    manual_model = _prompt_text("Ollama model name", default=status.recommended_model or DEFAULT_OLLAMA_PULL_MODEL)
+    manual_base = _prompt_text("Ollama base URL", default=_existing_base_for_preset(preset) or DEFAULT_OLLAMA_BASE_URL)
+    updates["OLLAMA_BASE_URL"] = manual_base
+    updated_profile = type(profile)(
+        slug=profile.slug,
+        label=f"Local model: {manual_model}",
+        summary=profile.summary,
+        reasoning=f"ollama/{manual_model}",
+        coding=f"ollama/{manual_model}",
+        fast=f"ollama/{manual_model}",
+    )
+    return updated_profile, updates
+
+
+def _setup_provider_configuration() -> tuple[dict[str, str | None], dict[str, str]]:
     presets = list(iter_provider_presets())
     index = _prompt_choice(
         "Choose your default AI provider",
@@ -532,6 +630,7 @@ def _setup_provider_configuration() -> tuple[dict[str, str], dict[str, str]]:
         default_index=1,
     )
     profile = preset.model_profiles[profile_index]
+    cleanup = provider_reset_values()
 
     secret_value: str | None = None
     if preset.secret_env:
@@ -546,6 +645,11 @@ def _setup_provider_configuration() -> tuple[dict[str, str], dict[str, str]]:
         current_base = _existing_base_for_preset(preset)
         base_value = _prompt_text(f"{preset.label} base URL", default=str(current_base) if current_base else None, allow_empty=False)
 
+    if preset.slug == "ollama":
+        profile, ollama_updates = _choose_ollama_model_interactively(preset, profile)
+        cleanup.update(ollama_updates)
+        base_value = cleanup.get("OLLAMA_BASE_URL") or base_value or _existing_base_for_preset(preset) or DEFAULT_OLLAMA_BASE_URL
+
     azure_api_version: str | None = None
     if preset.slug == "azure-openai":
         azure_api_version = _prompt_text("Azure API version", default=settings.azure_api_version or "2024-02-01-preview")
@@ -557,6 +661,7 @@ def _setup_provider_configuration() -> tuple[dict[str, str], dict[str, str]]:
         base_value=base_value,
         azure_api_version=azure_api_version,
     )
+    cleanup.update(config)
     summary = {
         "Provider": preset.label,
         "Model profile": profile.label,
@@ -564,15 +669,15 @@ def _setup_provider_configuration() -> tuple[dict[str, str], dict[str, str]]:
         "Coding": profile.coding,
         "Fast": profile.fast,
     }
-    return config, summary
+    if preset.slug == "ollama":
+        summary["Ollama runtime"] = profile.coding.removeprefix("ollama/")
+    return cleanup, summary
 
 
-def _setup_integrations() -> tuple[dict[str, str], list[tuple[str, str]]]:
-    updates: dict[str, str] = {
-        "TELEGRAM_ENABLED": "false",
-        "WHATSAPP_ENABLED": "false",
-    }
+def _setup_integrations() -> tuple[dict[str, str | None], list[tuple[str, str]]]:
+    updates: dict[str, str | None] = messaging_reset_values(enabled_channels=())
     optional: list[tuple[str, str]] = []
+    enabled_channels: list[str] = []
 
     ui.section("Optional Messaging Integrations")
     ui.info("Telegram and WhatsApp are optional. You can skip them now and add them later with `viki setup --repair`.")
@@ -590,6 +695,7 @@ def _setup_integrations() -> tuple[dict[str, str], list[tuple[str, str]]]:
             }
         )
         optional.append(("Telegram", "configured"))
+        enabled_channels.append("telegram")
     else:
         optional.append(("Telegram", "skipped"))
 
@@ -605,8 +711,11 @@ def _setup_integrations() -> tuple[dict[str, str], list[tuple[str, str]]]:
             }
         )
         optional.append(("WhatsApp", "configured"))
+        enabled_channels.append("whatsapp")
     else:
         optional.append(("WhatsApp", "skipped"))
+    if enabled_channels:
+        updates = {**messaging_reset_values(enabled_channels=enabled_channels), **updates}
     return updates, optional
 
 
@@ -676,21 +785,33 @@ def _run_setup_wizard(root: Path, *, title: str = "Setup Wizard", continue_to_pr
     configured = list(provider_summary.items()) + preference_summary
     optional = integration_summary + [("Workspace", "ready" if (root / settings.workspace_dir).exists() else "will initialize on first run")]
     ui.render_setup_summary(configured=configured, optional=optional, config_path=config_path)
+    if settings.viki_provider == "ollama":
+        _render_ollama_runtime_summary()
     if provider.validate_config():
         ui.success("Provider routing is ready.")
     else:
         ui.warning("Setup was saved, but the provider still looks incomplete. Re-run `viki setup --repair` if needed.")
-    ui.render_hint_strip(
-        [
-            "Run `viki` for the prompt-first experience",
-            "Run `viki doctor .` to review routing and runtime checks",
-            "Run `viki providers` to inspect fallback order and model slots",
-        ]
-    )
+    if continue_to_prompt:
+        ui.render_hint_strip(
+            [
+                "Setup is complete. VIKI will return to the home shell next.",
+                "The prompt buffer will be cleared before task entry.",
+                "Type a task naturally once the viki> prompt appears.",
+            ]
+        )
+    else:
+        ui.render_hint_strip(
+            [
+                "Run `viki` for the prompt-first experience",
+                "Run `viki doctor .` to review routing and runtime checks",
+                "Run `viki providers` to inspect the active provider and model slots",
+            ]
+        )
     return {
         "config_path": str(config_path),
         "provider_ready": provider.validate_config(),
         "continue_to_prompt": continue_to_prompt,
+        "provider": settings.viki_provider,
     }
 
 
@@ -794,6 +915,27 @@ def _run_live_session(
         raise typer.Exit(1)
 
 
+def _shell_action_from_prompt(prompt: str) -> str | None:
+    lowered = prompt.strip().lower()
+    if not lowered:
+        return None
+    if lowered in {"/quit", "/exit", "/help", "/workspace", "/github", "/resume", "/approvals", "/diffs", "/diff", "/setup", "/status"}:
+        return lowered
+    if any(token in lowered for token in ["continue the last task", "continue last task", "continue the last session", "continue last session", "resume session", "resume the last task"]):
+        return "/resume"
+    if any(token in lowered for token in ["show the last diff", "show last diff", "review last diff", "open the last diff", "show recent diffs"]):
+        return "/diffs"
+    if any(token in lowered for token in ["connect github", "open github", "browse github repos", "clone from github"]):
+        return "/github"
+    if any(token in lowered for token in ["switch workspace", "switch repo", "open repo", "choose workspace", "choose repo", "change workspace"]):
+        return "/workspace"
+    if any(token in lowered for token in ["set this up", "setup provider", "configure provider", "run setup", "open setup"]):
+        return "/setup"
+    if any(token in lowered for token in ["show status", "session status", "recent sessions", "what is active right now"]):
+        return "/status"
+    return None
+
+
 def _launch_default_entry(root: Path) -> None:
     root = _default_entry_root(root)
     remember_workspace(root)
@@ -810,15 +952,18 @@ def _launch_default_entry(root: Path) -> None:
             except (EOFError, KeyboardInterrupt, ClickAbort):
                 ui.info("Run `viki setup` in an interactive terminal to complete onboarding.")
                 return
+            _drain_console_input()
             continue
         if not provider.validate_config():
             provider = _interactive_setup_repair(root)
+            _drain_console_input()
             continue
 
         _ensure_workspace_ready(root)
         ui.render_hint_strip(
             [
-                "Type a task directly to start coding",
+                "Type a task naturally to start coding",
+                "Examples: 'fix this bug', 'continue the last task', 'show the last diff', 'rename this helper everywhere'",
                 "Use /workspace to switch repos or /github to clone from GitHub",
                 "Use /resume to continue a prior session, /approvals to review gates, or /diffs to inspect changes",
             ],
@@ -835,7 +980,7 @@ def _launch_default_entry(root: Path) -> None:
             ui.info("No task entered. Use `viki` again for the home screen or `viki run \"...\"` for a direct task.")
             return
 
-        command = prompt.lower()
+        command = _shell_action_from_prompt(prompt) or prompt.lower()
         if command in {"/quit", "/exit"}:
             ui.info("VIKI closed.")
             return
@@ -871,6 +1016,7 @@ def _launch_default_entry(root: Path) -> None:
             continue
         if command == "/setup":
             _run_setup_wizard(root, title="Setup Wizard", continue_to_prompt=True)
+            _drain_console_input()
             continue
         if command == "/status":
             status(path=root)
@@ -894,6 +1040,7 @@ def _ensure_initialized(root: Path, force_env: bool = False) -> Path:
 def _env_template(workspace_db: Path) -> str:
     return f"""# VIKI routing
 VIKI_PROVIDER=
+VIKI_PROVIDER_ALLOW_FALLBACKS=false
 VIKI_THEME={settings.viki_theme}
 VIKI_DEFAULT_RUN_MODE={settings.default_run_mode}
 VIKI_REASONING_MODEL=
@@ -923,8 +1070,8 @@ AZURE_API_BASE=
 AZURE_API_VERSION=
 OPENAI_API_BASE=
 OPENAI_COMPAT_MODEL=
-OLLAMA_BASE_URL=
-OLLAMA_MODEL=
+OLLAMA_BASE_URL={DEFAULT_OLLAMA_BASE_URL}
+OLLAMA_MODEL={settings.local_model.removeprefix("ollama/")}
 
 # Runtime
 SANDBOX_ENABLED=true
@@ -959,8 +1106,9 @@ def setup(
 ):
     root = _workspace_root(path)
     state = onboarding_state(root)
-    if state["config_exists"] and state["provider_ready"] and not repair:
-        _render_cli_header("Setup", root=root, provider=LiteLLMProvider(), autonomy_mode="setup", validation_state="configured")
+    provider = LiteLLMProvider()
+    if state["config_exists"] and state["provider_ready"] and provider.validate_config() and not repair:
+        _render_cli_header("Setup", root=root, provider=provider, autonomy_mode="setup", validation_state="configured")
         ui.success("VIKI already has user-level provider configuration.")
         ui.render_setup_summary(
             configured=[
@@ -1065,6 +1213,7 @@ def doctor(path: Path = typer.Argument(Path('.'), help="Workspace root")):
     table.add_row("Launcher", profile.launcher_hint)
     ui.render_table(table)
     _render_provider_overview(provider)
+    _render_ollama_runtime_summary()
 
 
 @app.command("providers")
@@ -1073,6 +1222,7 @@ def providers_status():
     _render_cli_header("Providers", root=Path("."), provider=provider, autonomy_mode="provider-routing", validation_state="diagnostic")
     ui.info(f"User config path: {user_config_path()}")
     _render_provider_overview(provider)
+    _render_ollama_runtime_summary()
 
 
 @app.command("platforms")

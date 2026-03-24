@@ -5,7 +5,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from viki.cli import app
+from viki.cli import _shell_action_from_prompt, app
 from viki.github_connect import GitHubRepo, GitHubStatus
 from viki.infrastructure.database import DatabaseManager
 from viki.product_state import active_workspace_path, load_product_state, remember_workspace, set_active_workspace
@@ -148,3 +148,10 @@ def test_sessions_commands_list_and_continue_without_follow_up(tmp_path: Path):
     assert "20260324-010101" in listed.output
     assert continued.exit_code == 0, continued.output
     assert "Selected session 20260324-010101" in continued.output
+
+
+def test_prompt_first_shell_maps_natural_language_to_product_actions():
+    assert _shell_action_from_prompt("continue the last task") == "/resume"
+    assert _shell_action_from_prompt("show the last diff") == "/diffs"
+    assert _shell_action_from_prompt("connect github") == "/github"
+    assert _shell_action_from_prompt("switch workspace") == "/workspace"

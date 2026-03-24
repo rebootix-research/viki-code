@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from viki import __version__
 from viki.cli import app
+from viki.ollama_support import OllamaRuntimeStatus
 
 
 runner = CliRunner()
@@ -238,7 +239,7 @@ def test_github_clone_validator_remove_tree_handles_readonly_file(tmp_path: Path
     assert not target.exists()
 
 
-def test_connected_product_validator_prefers_dashscope_when_available():
+def test_connected_product_validator_prefers_dashscope_when_available(monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "viki_validate_connected_product_clone_live",
         Path(__file__).resolve().parents[1] / "scripts" / "validate_connected_product_clone_live.py",
@@ -246,6 +247,19 @@ def test_connected_product_validator_prefers_dashscope_when_available():
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module,
+        "get_ollama_runtime_status",
+        lambda allow_pull=False: OllamaRuntimeStatus(
+            cli_available=False,
+            reachable=False,
+            base_url="http://127.0.0.1:11434",
+            models=(),
+            selected_model=None,
+            recommended_model="qwen2.5-coder:7b",
+            error="missing",
+        ),
+    )
 
     detected = module.detect_live_provider(
         {
@@ -257,6 +271,33 @@ def test_connected_product_validator_prefers_dashscope_when_available():
 
     assert detected["provider"] == "dashscope"
     assert "DASHSCOPE_API_KEY" in detected["forwarded_keys"]
+
+
+def test_connected_product_validator_prefers_ollama_when_local_runtime_is_ready(monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "viki_validate_connected_product_clone_live",
+        Path(__file__).resolve().parents[1] / "scripts" / "validate_connected_product_clone_live.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module,
+        "get_ollama_runtime_status",
+        lambda allow_pull=False: OllamaRuntimeStatus(
+            cli_available=True,
+            reachable=True,
+            base_url="http://127.0.0.1:11434",
+            models=("qwen2.5-coder:7b",),
+            selected_model="qwen2.5-coder:7b",
+            recommended_model="qwen2.5-coder:7b",
+        ),
+    )
+
+    detected = module.detect_live_provider({})
+
+    assert detected["provider"] == "ollama"
+    assert detected["ollama_model"] == "qwen2.5-coder:7b"
 
 
 def test_connected_product_validator_scrubs_unforwarded_provider_secrets():
