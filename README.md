@@ -56,7 +56,7 @@ It is built for serious engineering workflows: bug-fixes, refactors, migrations,
 
 | Signal | Current 4.1.4 evidence |
 | --- | --- |
-| Local regression suite | `99 passed` |
+| Local regression suite | `100 passed` |
 | Live validation suite | `9/9 passed` on fresh repos |
 | Generic CLI live wins | `7/7 passed` |
 | Public live benchmark slice | `8/8 passed` |
