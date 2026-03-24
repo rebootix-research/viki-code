@@ -343,6 +343,30 @@ def test_connected_product_validator_extracts_provider_failures():
     assert "All provider attempts failed." in error
 
 
+def test_connected_product_validator_secret_scan_ignores_non_secret_ollama_values(tmp_path: Path):
+    spec = importlib.util.spec_from_file_location(
+        "viki_validate_connected_product_clone_live",
+        Path(__file__).resolve().parents[1] / "scripts" / "validate_connected_product_clone_live.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    probe = tmp_path / "summary.txt"
+    probe.write_text("OLLAMA_BASE_URL=http://127.0.0.1:11434\nOLLAMA_MODEL=qwen2.5-coder:7b\n", encoding="utf-8")
+
+    count = module.secret_match_count(
+        tmp_path,
+        {
+            "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
+            "OLLAMA_MODEL": "qwen2.5-coder:7b",
+        },
+        ["OLLAMA_BASE_URL", "OLLAMA_MODEL"],
+    )
+
+    assert count == 0
+
+
 def test_bootstrap_retries_with_system_site_packages_and_no_deps(monkeypatch, tmp_path: Path):
     spec = importlib.util.spec_from_file_location(
         "viki_bootstrap",

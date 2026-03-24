@@ -177,7 +177,11 @@ def extract_provider_failure_text(command_result: dict[str, object]) -> str | No
 
 
 def secret_match_count(root: Path, env: dict[str, str], forwarded_keys: list[str]) -> int:
-    values = [env.get(key, "") for key in forwarded_keys if env.get(key)]
+    values = [
+        env.get(key, "")
+        for key in forwarded_keys
+        if key in KNOWN_PROVIDER_SECRET_KEYS and env.get(key)
+    ]
     if not values:
         return 0
     count = 0
