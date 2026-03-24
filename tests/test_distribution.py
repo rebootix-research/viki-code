@@ -280,3 +280,53 @@ def test_connected_product_validator_scrubs_unforwarded_provider_secrets():
     assert isolated["DASHSCOPE_API_KEY"] == "redacted"
     assert "OPENAI_API_KEY" not in isolated
     assert isolated["VIKI_PROVIDER"] == "dashscope"
+
+
+def test_bootstrap_retries_with_system_site_packages_and_no_deps(monkeypatch, tmp_path: Path):
+    spec = importlib.util.spec_from_file_location(
+        "viki_bootstrap",
+        Path(__file__).resolve().parents[1] / "scripts" / "bootstrap.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    from viki.platforms import PlatformSupport
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    install_attempts: list[tuple[bool, bool]] = []
+    create_calls: list[bool] = []
+    run_commands: list[list[str]] = []
+
+    def fake_create_venv(root_path: Path, target: Path, *, use_system_site_packages: bool = False):
+        create_calls.append(use_system_site_packages)
+        scripts_dir = target / "Scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        (scripts_dir / "python.exe").write_text("", encoding="utf-8")
+
+    def fake_upgrade(root_path: Path, python_bin: Path):
+        return None
+
+    def fake_install(root_path: Path, python_bin: Path, *, install_dev: bool, update: bool, no_deps: bool = False):
+        install_attempts.append((update, no_deps))
+        if len(install_attempts) < 3:
+            raise module.subprocess.CalledProcessError(returncode=1, cmd=["pip", "install"])
+
+    class DummyProfile:
+        os_name = "windows"
+        launcher_hint = "viki"
+
+    monkeypatch.setattr(module, "create_venv", fake_create_venv)
+    monkeypatch.setattr(module, "upgrade_packaging_tools", fake_upgrade)
+    monkeypatch.setattr(module, "install_project", fake_install)
+    monkeypatch.setattr(PlatformSupport, "current", staticmethod(lambda: DummyProfile()))
+    monkeypatch.setattr(PlatformSupport, "venv_python", staticmethod(lambda target, profile: target / "Scripts" / "python.exe"))
+    monkeypatch.setattr(PlatformSupport, "write_local_launchers", staticmethod(lambda root_path, python_bin: []))
+    monkeypatch.setattr(PlatformSupport, "write_user_launchers", staticmethod(lambda python_bin, profile: []))
+    monkeypatch.setattr(module, "run", lambda cmd, cwd: run_commands.append(cmd))
+
+    module.bootstrap(root=root, install_dev=False, force_env=False, run_server=False, host="127.0.0.1", port="8787", update=False)
+
+    assert create_calls == [False, True]
+    assert install_attempts == [(False, False), (False, False), (False, True)]
+    assert any("viki.cli" in " ".join(command) for command in run_commands)

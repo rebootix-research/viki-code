@@ -79,15 +79,15 @@ def setup_wizard_input(provider_slug: str) -> str:
 
 def bugfix_prompt_variants() -> list[str]:
     return [
-        "Fix the broken calculation and make the tests pass.",
-        "The multiplication behavior is wrong in this repository. Repair it and run the relevant tests before you finish.",
+        "Fix the broken calculation in this repository so multiply returns correct results, then run the relevant tests.",
+        "A multiplication helper is wrong in this repository. Repair it so multiply(3, 4) returns 12 and run the relevant test before you finish.",
     ]
 
 
 def refactor_prompt_variants() -> list[str]:
     return [
-        "Refactor auth naming consistently and keep behavior green.",
-        "Rename the public auth helper consistently so the account normalization naming is clear, then run the relevant tests.",
+        "Refactor the public auth naming in this repository so the account normalization helper is named normalize_account, keep behavior the same, and run the relevant tests.",
+        "There is an auth naming inconsistency in this repository. Rename the public helper to normalize_account, update callers, and run the relevant tests.",
     ]
 
 
@@ -202,6 +202,7 @@ def main() -> None:
     commands.append(run_powershell("viki --force-rich --theme premium", output, env, security, timeout=900, input_text="\n"))
 
     live_bugfix: dict[str, object] | None = None
+    bugfix_pytest: dict[str, object] | None = None
     bugfix_session: str | None = None
     for prompt in bugfix_prompt_variants():
         candidate = run_powershell(
@@ -216,10 +217,12 @@ def main() -> None:
         bugfix_session = parse_session_id(str(candidate["stdout"]))
         pytest_candidate = run_powershell("python -m pytest --rootdir . tests/test_calculator.py -q", bugfix_repo, env, security, timeout=600)
         commands.append(pytest_candidate)
+        bugfix_pytest = pytest_candidate
         calculator_text = (bugfix_repo / "app" / "calculator.py").read_text(encoding="utf-8")
         if candidate["returncode"] == 0 and "return a * b" in calculator_text and pytest_candidate["returncode"] == 0:
             break
     assert live_bugfix is not None
+    assert bugfix_pytest is not None
 
     if bugfix_session:
         commands.append(run_powershell(f"viki --plain sessions list '{bugfix_repo}'", clone_dir, env, security))
@@ -227,6 +230,7 @@ def main() -> None:
         commands.append(run_powershell(f"viki --force-rich --theme premium diff {bugfix_session} --path '{bugfix_repo}' --rendered", clone_dir, env, security))
 
     live_refactor: dict[str, object] | None = None
+    refactor_pytest: dict[str, object] | None = None
     for prompt in refactor_prompt_variants():
         candidate = run_powershell(
             f"viki --plain run \"{prompt}\" --path '{refactor_repo}'",
@@ -239,14 +243,13 @@ def main() -> None:
         live_refactor = candidate
         pytest_candidate = run_powershell("python -m pytest --rootdir . tests/test_service.py -q", refactor_repo, env, security, timeout=600)
         commands.append(pytest_candidate)
+        refactor_pytest = pytest_candidate
         auth_text = (refactor_repo / "packages" / "shared" / "auth.py").read_text(encoding="utf-8")
         service_text = (refactor_repo / "apps" / "api" / "service.py").read_text(encoding="utf-8")
         if candidate["returncode"] == 0 and "def normalize_account" in auth_text and "normalize_account" in service_text and pytest_candidate["returncode"] == 0:
             break
     assert live_refactor is not None
-
-    bugfix_pytest = commands[-4] if bugfix_session else commands[-3]
-    refactor_pytest = commands[-1]
+    assert refactor_pytest is not None
     home_shell_output = str(commands[10]["stdout"])
     config_saved = config_home.joinpath("config.env").exists()
     remove_tree(config_home)

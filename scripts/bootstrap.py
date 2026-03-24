@@ -25,6 +25,29 @@ def run(cmd: list[str], cwd: Path) -> None:
     subprocess.run(cmd, cwd=str(cwd), check=True)
 
 
+def create_venv(root: Path, venv_dir: Path, *, use_system_site_packages: bool = False) -> None:
+    command = [sys.executable, "-m", "venv"]
+    if use_system_site_packages:
+        command.append("--system-site-packages")
+    command.append(str(venv_dir))
+    run(command, cwd=root)
+
+
+def upgrade_packaging_tools(root: Path, python_bin: Path) -> None:
+    run([str(python_bin), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], cwd=root)
+
+
+def install_project(root: Path, python_bin: Path, *, install_dev: bool, update: bool, no_deps: bool = False) -> None:
+    extras = "[dev]" if install_dev else ""
+    command = [str(python_bin), "-m", "pip", "install"]
+    if update:
+        command.append("--upgrade")
+    if no_deps:
+        command.append("--no-deps")
+    command.append(f".{extras}")
+    run(command, cwd=root)
+
+
 def bootstrap(root: Path, install_dev: bool, force_env: bool, run_server: bool, host: str, port: int, update: bool = False) -> None:
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
@@ -35,16 +58,23 @@ def bootstrap(root: Path, install_dev: bool, force_env: bool, run_server: bool, 
     python_bin = Path(str(PlatformSupport.venv_python(venv_dir, profile)))
 
     if not python_bin.exists():
-        run([sys.executable, "-m", "venv", str(venv_dir)], cwd=root)
+        create_venv(root, venv_dir)
 
-    run([str(python_bin), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], cwd=root)
+    upgrade_packaging_tools(root, python_bin)
 
-    extras = "[dev]" if install_dev else ""
-    install_cmd = [str(python_bin), "-m", "pip", "install"]
-    if update:
-        install_cmd.append("--upgrade")
-    install_cmd.append(f".{extras}")
-    run(install_cmd, cwd=root)
+    try:
+        install_project(root, python_bin, install_dev=install_dev, update=update)
+    except subprocess.CalledProcessError:
+        print("[viki-bootstrap] dependency resolution failed; retrying with shared-runtime fallback")
+        shutil.rmtree(venv_dir, ignore_errors=True)
+        create_venv(root, venv_dir, use_system_site_packages=True)
+        python_bin = Path(str(PlatformSupport.venv_python(venv_dir, profile)))
+        upgrade_packaging_tools(root, python_bin)
+        try:
+            install_project(root, python_bin, install_dev=install_dev, update=update)
+        except subprocess.CalledProcessError:
+            print("[viki-bootstrap] provider/runtime packages appear to exist on the host interpreter; retrying without dependency resolution")
+            install_project(root, python_bin, install_dev=install_dev, update=update, no_deps=True)
 
     init_cmd = [str(python_bin), "-m", "viki.cli", "up", str(root), "--dry-run"]
     if force_env:
